@@ -40,11 +40,20 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g,
 class Pagination {
   constructor(prefix) {
     this.prefix = prefix;
-    this.pageSizeKey = `${prefix}PageSize`;
-    this.currentPageKey = `${prefix}CurrentPage`;
-    this.searchKey = `${prefix}Search`;
-    this.sortKey = `${prefix}Sort`;
-    this.filterKey = `${prefix}Filter`;
+    // Containers uses unprefixed keys in state (pageSize, currentPage) for backward compatibility
+    if (prefix === "containers") {
+      this.pageSizeKey = "pageSize";
+      this.currentPageKey = "currentPage";
+      this.searchKey = "search";
+      this.sortKey = "sort";
+      this.filterKey = "filter";
+    } else {
+      this.pageSizeKey = `${prefix}PageSize`;
+      this.currentPageKey = `${prefix}CurrentPage`;
+      this.searchKey = `${prefix}Search`;
+      this.sortKey = `${prefix}Sort`;
+      this.filterKey = `${prefix}Filter`;
+    }
     this.dataKey = prefix === "containers" ? "containers" : `${prefix}s`;
   }
 
@@ -223,9 +232,13 @@ async function loadSystem() {
 
 /* ------------------------------------------------------------- containers */
 async function loadContainers() {
+  // Show loading state immediately for dashboard
+  if (state.page === "dashboard") showDashboardLoading(true);
+
   try {
     state.containers = await api("/api/containers");
   } catch (e) {
+    if (state.page === "dashboard") showDashboardLoading(false);
     if ($("#container-tbody")) $("#container-tbody").innerHTML =
       `<tr><td colspan="9" class="text-center text-danger py-4">${esc(e.message)}</td></tr>`;
     return;
@@ -234,7 +247,13 @@ async function loadContainers() {
   const ids = new Set(state.containers.map(c => c.id));
   for (const id of [...state.selected]) if (!ids.has(id)) state.selected.delete(id);
   containersPagination.resetPage();
-  renderSummary(); renderContainers(); updateSelCount();
+  if (state.page === "dashboard") {
+    showDashboardLoading(false);
+    renderSummary();
+  } else {
+    renderSummary(); renderContainers();
+  }
+  updateSelCount();
 }
 
 /* Single point to reset the container selection: IDs, checkboxes,
@@ -369,6 +388,8 @@ function renderSummary() {
       <td class="text-muted">${x.stats?.cpu_percent ?? "–"}%</td>
       <td class="text-muted">${fmtBytes(x.stats?.mem_usage)}</td>
     </tr>`).join("") + "</tbody></table></div></div>";
+
+  renderDashboardPagination();
 }
 
 function renderContainers() {
@@ -410,6 +431,34 @@ function renderContainersPagination() {
   containersPagination.render(
     $("#pagination-info"), $("#pagination-controls"),
     $("#btn-page-prev"), $("#btn-page-next"), $("#page-indicator"),
+    "container", filtered
+  );
+}
+
+function showDashboardLoading(show) {
+  const listEl = $("#dashboard-list");
+  if (!listEl) return;
+  if (show) {
+    listEl.innerHTML = `<div class="card dm-card"><div class="table-responsive">
+      <table class="table table-hover align-middle mb-0"><tbody>
+        <tr><td colspan="5" class="text-center py-4">
+          <div class="d-flex flex-column align-items-center gap-2">
+            <div class="spinner-border text-accent" role="status" aria-hidden="true"></div>
+            <span class="text-muted small">Loading containers…</span>
+          </div>
+        </td></tr>
+      </tbody></table></div></div>`;
+    // Hide pagination while loading
+    const controls = $("#dashboard-pagination-controls");
+    if (controls) controls.classList.add("d-none");
+  }
+}
+
+function renderDashboardPagination() {
+  const filtered = filteredContainers();
+  containersPagination.render(
+    $("#dashboard-pagination-info"), $("#dashboard-pagination-controls"),
+    $("#btn-dashboard-page-prev"), $("#btn-dashboard-page-next"), $("#dashboard-page-indicator"),
     "container", filtered
   );
 }
