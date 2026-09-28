@@ -4,6 +4,7 @@
 const state = {
   containers: [], pollInterval: 5000, page: "dashboard",
   search: "", filter: "all", sort: "name",
+  pageSize: 10, currentPage: 1,
   selected: new Set(), restoreFile: null, restoreBuffer: null,
   logSocket: null, logContainer: null, pendingConfirm: null,
 };
@@ -152,6 +153,7 @@ async function loadContainers() {
   // Drop selections pointing at containers that no longer exist (stale state).
   const ids = new Set(state.containers.map(c => c.id));
   for (const id of [...state.selected]) if (!ids.has(id)) state.selected.delete(id);
+  state.currentPage = 1;
   renderSummary(); renderContainers(); updateSelCount();
 }
 
@@ -251,7 +253,10 @@ function renderSummary() {
 }
 
 function renderContainers() {
-  const list = filtered();
+  const totalPages = getTotalPages();
+  if (state.currentPage > totalPages) state.currentPage = totalPages;
+
+  const list = getPaginatedList();
   $("#container-tbody").innerHTML = list.map(c => `<tr>
     <td><input class="form-check-input sel" type="checkbox" data-id="${c.id}" ${state.selected.has(c.id) ? "checked" : ""}></td>
     <td><a href="#" class="text-decoration-none text-accent fw-semibold" data-details="${c.id}" data-name="${esc(c.name)}">${esc(c.name)}</a>
@@ -277,11 +282,58 @@ function renderContainers() {
         <span class="small text-muted">${c.state === "running" ? `CPU ${c.stats?.cpu_percent ?? "–"}% · ${fmtBytes(c.stats?.mem_usage)}` : "offline"}</span>
         <span class="text-nowrap">${actionButtons(c)}</span></div>
     </div></div>`).join("");
+
+  renderPagination();
 }
 
 function updateSelCount() {
   $("#sel-count").textContent = state.selected.size;
   $("#btn-backup-selected").disabled = !state.selected.size;
+}
+
+function getTotalPages() {
+  const list = filtered();
+  if (state.pageSize === -1) return 1;
+  return Math.max(1, Math.ceil(list.length / state.pageSize));
+}
+
+function getPaginatedList() {
+  const list = filtered();
+  if (state.pageSize === -1) return list;
+  const start = (state.currentPage - 1) * state.pageSize;
+  return list.slice(start, start + state.pageSize);
+}
+
+function renderPagination() {
+  const list = filtered();
+  const total = list.length;
+  const totalPages = getTotalPages();
+  const isAll = state.pageSize === -1;
+
+  const info = $("#pagination-info");
+  const controls = $("#pagination-controls");
+  const prevBtn = $("#btn-page-prev");
+  const nextBtn = $("#btn-page-next");
+  const indicator = $("#page-indicator");
+
+  if (isAll || totalPages <= 1) {
+    controls.classList.add("d-none");
+    if (isAll) {
+      info.textContent = `Showing all ${total} container${total !== 1 ? "s" : ""}`;
+    } else {
+      info.textContent = `${total} container${total !== 1 ? "s" : ""}`;
+    }
+    return;
+  }
+
+  controls.classList.remove("d-none");
+  const start = (state.currentPage - 1) * state.pageSize + 1;
+  const end = Math.min(state.currentPage * state.pageSize, total);
+  info.textContent = `Showing ${start}–${end} of ${total} container${total !== 1 ? "s" : ""}`;
+
+  prevBtn.disabled = state.currentPage === 1;
+  nextBtn.disabled = state.currentPage === totalPages;
+  indicator.textContent = `Page ${state.currentPage} of ${totalPages}`;
 }
 
 /* delegated events */
@@ -330,9 +382,22 @@ $("#sel-all").addEventListener("change", e => {
   filtered().forEach(c => e.target.checked ? state.selected.add(c.id) : state.selected.delete(c.id));
   renderContainers(); updateSelCount();
 });
-$("#search").addEventListener("input", e => { state.search = e.target.value.toLowerCase(); renderContainers(); });
-$("#filter-state").addEventListener("change", e => { state.filter = e.target.value; renderContainers(); });
-$("#sort-by").addEventListener("change", e => { state.sort = e.target.value; renderContainers(); });
+$("#search").addEventListener("input", e => { state.search = e.target.value.toLowerCase(); state.currentPage = 1; renderContainers(); });
+$("#filter-state").addEventListener("change", e => { state.filter = e.target.value; state.currentPage = 1; renderContainers(); });
+$("#sort-by").addEventListener("change", e => { state.sort = e.target.value; state.currentPage = 1; renderContainers(); });
+$("#page-size").addEventListener("change", e => {
+  const val = e.target.value;
+  state.pageSize = val === "all" ? -1 : +val;
+  state.currentPage = 1;
+  renderContainers();
+});
+$("#btn-page-prev").addEventListener("click", () => {
+  if (state.currentPage > 1) { state.currentPage--; renderContainers(); }
+});
+$("#btn-page-next").addEventListener("click", () => {
+  const totalPages = getTotalPages();
+  if (state.currentPage < totalPages) { state.currentPage++; renderContainers(); }
+});
 $("#btn-refresh").addEventListener("click", () => {
   clearContainerSelection();   // explicit refresh resets stale selections
   refreshPage();
