@@ -5,6 +5,12 @@ const state = {
   containers: [], pollInterval: 5000, page: "dashboard",
   search: "", filter: "all", sort: "name",
   pageSize: 10, currentPage: 1,
+  images: [], imagesSearch: "", imagesSort: "repo",
+  imagesPageSize: 10, imagesCurrentPage: 1,
+  volumes: [], volumesSearch: "", volumesSort: "name",
+  volumesPageSize: 10, volumesCurrentPage: 1,
+  networks: [], networksSearch: "", networksSort: "name",
+  networksPageSize: 10, networksCurrentPage: 1,
   selected: new Set(), restoreFile: null, restoreBuffer: null,
   logSocket: null, logContainer: null, pendingConfirm: null,
 };
@@ -28,7 +34,81 @@ const fmtUptime = (started) => {
   return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m ${Math.floor(s % 60)}s`;
 };
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
-  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  c => ({ "&": "&", "<": "<", ">": ">", '"': "\"", "'": "'" }[c]));
+
+/* ---------------------------------------------------------------- pagination helper */
+class Pagination {
+  constructor(prefix) {
+    this.prefix = prefix;
+    this.pageSizeKey = `${prefix}PageSize`;
+    this.currentPageKey = `${prefix}CurrentPage`;
+    this.searchKey = `${prefix}Search`;
+    this.sortKey = `${prefix}Sort`;
+    this.filterKey = `${prefix}Filter`;
+    this.dataKey = prefix === "containers" ? "containers" : `${prefix}s`;
+  }
+
+  get pageSize() { return state[this.pageSizeKey]; }
+  set pageSize(v) { state[this.pageSizeKey] = v; }
+  get currentPage() { return state[this.currentPageKey]; }
+  set currentPage(v) { state[this.currentPageKey] = v; }
+  get search() { return state[this.searchKey]; }
+  set search(v) { state[this.searchKey] = v; }
+  get sort() { return state[this.sortKey]; }
+  set sort(v) { state[this.sortKey] = v; }
+  get filter() { return state[this.filterKey] ?? "all"; }
+  set filter(v) { state[this.filterKey] = v; }
+  get data() { return state[this.dataKey]; }
+  set data(v) { state[this.dataKey] = v; }
+
+  getTotalPages(filteredList) {
+    if (this.pageSize === -1) return 1;
+    return Math.max(1, Math.ceil(filteredList.length / this.pageSize));
+  }
+
+  getPaginatedList(filteredList) {
+    if (this.pageSize === -1) return filteredList;
+    const start = (this.currentPage - 1) * this.pageSize;
+    return filteredList.slice(start, start + this.pageSize);
+  }
+
+  resetPage() { this.currentPage = 1; }
+
+  adjustPage(totalPages) {
+    if (this.currentPage > totalPages) this.currentPage = totalPages;
+  }
+
+  render(infoEl, controlsEl, prevBtn, nextBtn, indicator, itemName, filteredList) {
+    const total = filteredList.length;
+    const totalPages = this.getTotalPages(filteredList);
+    const isAll = this.pageSize === -1;
+
+    if (isAll || totalPages <= 1) {
+      controlsEl.classList.add("d-none");
+      if (isAll) {
+        infoEl.textContent = `Showing all ${total} ${itemName}${total !== 1 ? "s" : ""}`;
+      } else {
+        infoEl.textContent = `${total} ${itemName}${total !== 1 ? "s" : ""}`;
+      }
+      return;
+    }
+
+    controlsEl.classList.remove("d-none");
+    const start = (this.currentPage - 1) * this.pageSize + 1;
+    const end = Math.min(this.currentPage * this.pageSize, total);
+    infoEl.textContent = `Showing ${start}–${end} of ${total} ${itemName}${total !== 1 ? "s" : ""}`;
+
+    prevBtn.disabled = this.currentPage === 1;
+    nextBtn.disabled = this.currentPage === totalPages;
+    indicator.textContent = `Page ${this.currentPage} of ${totalPages}`;
+  }
+}
+
+/* pagination instances */
+const containersPagination = new Pagination("containers");
+const imagesPagination = new Pagination("images");
+const volumesPagination = new Pagination("volumes");
+const networksPagination = new Pagination("networks");
 
 async function api(path, opts = {}) {
   const r = await fetch(path, opts);
@@ -153,7 +233,7 @@ async function loadContainers() {
   // Drop selections pointing at containers that no longer exist (stale state).
   const ids = new Set(state.containers.map(c => c.id));
   for (const id of [...state.selected]) if (!ids.has(id)) state.selected.delete(id);
-  state.currentPage = 1;
+  containersPagination.resetPage();
   renderSummary(); renderContainers(); updateSelCount();
 }
 
@@ -167,7 +247,7 @@ function clearContainerSelection() {
   updateSelCount();
 }
 
-function filtered() {
+function filteredContainers() {
   let list = state.containers.filter(c =>
     (!state.search || c.name.toLowerCase().includes(state.search)
                      || c.image.toLowerCase().includes(state.search)) &&
@@ -177,6 +257,40 @@ function filtered() {
   const key = { name: c => c.name.toLowerCase(), state: c => c.state,
     cpu: c => -(c.stats?.cpu_percent || 0), mem: c => -(c.stats?.mem_usage || 0),
     created: c => -(Date.parse(c.created) || 0) }[state.sort];
+  return [...list].sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+}
+
+function filteredImages() {
+  let list = state.images.filter(i =>
+    !state.imagesSearch ||
+    i.repo.toLowerCase().includes(state.imagesSearch) ||
+    i.tag.toLowerCase().includes(state.imagesSearch) ||
+    i.short_id.toLowerCase().includes(state.imagesSearch)
+  );
+  const key = { repo: i => i.repo.toLowerCase(), tag: i => i.tag.toLowerCase(),
+    created: i => -(Date.parse(i.created) || 0), size: i => -(i.size || 0) }[state.imagesSort];
+  return [...list].sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+}
+
+function filteredVolumes() {
+  let list = state.volumes.filter(v =>
+    !state.volumesSearch ||
+    v.name.toLowerCase().includes(state.volumesSearch) ||
+    v.driver.toLowerCase().includes(state.volumesSearch) ||
+    v.mountpoint.toLowerCase().includes(state.volumesSearch)
+  );
+  const key = { name: v => v.name.toLowerCase(), driver: v => v.driver.toLowerCase() }[state.volumesSort];
+  return [...list].sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+}
+
+function filteredNetworks() {
+  let list = state.networks.filter(n =>
+    !state.networksSearch ||
+    n.name.toLowerCase().includes(state.networksSearch) ||
+    n.driver.toLowerCase().includes(state.networksSearch) ||
+    (n.subnet || "").toLowerCase().includes(state.networksSearch)
+  );
+  const key = { name: n => n.name.toLowerCase(), driver: n => n.driver.toLowerCase() }[state.networksSort];
   return [...list].sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
 }
 
@@ -242,9 +356,14 @@ function renderSummary() {
     <div class="col-6 col-md-4 col-lg-2"><div class="dm-card stat-card">
       <div class="value"><i class="bi bi-${i} text-accent"></i> ${v}</div>
       <div class="label">${l}</div></div></div>`).join("");
+
+  // Dashboard containers overview — now paginated
+  const filtered = filteredContainers();
+  const paginated = containersPagination.getPaginatedList(filtered);
+  containersPagination.adjustPage(containersPagination.getTotalPages(filtered));
   $("#dashboard-list").innerHTML = `<div class="card dm-card"><div class="table-responsive">
     <table class="table table-hover align-middle mb-0"><tbody>` +
-    c.slice(0, 10).map(x => `<tr>
+    paginated.map(x => `<tr>
       <td><i class="bi bi-box-seam text-accent"></i> <b>${esc(x.name)}</b></td>
       <td class="text-muted">${esc(x.image)}</td><td>${badge(x.state)}</td>
       <td class="text-muted">${x.stats?.cpu_percent ?? "–"}%</td>
@@ -253,10 +372,10 @@ function renderSummary() {
 }
 
 function renderContainers() {
-  const totalPages = getTotalPages();
-  if (state.currentPage > totalPages) state.currentPage = totalPages;
+  const filtered = filteredContainers();
+  containersPagination.adjustPage(containersPagination.getTotalPages(filtered));
+  const list = containersPagination.getPaginatedList(filtered);
 
-  const list = getPaginatedList();
   $("#container-tbody").innerHTML = list.map(c => `<tr>
     <td><input class="form-check-input sel" type="checkbox" data-id="${c.id}" ${state.selected.has(c.id) ? "checked" : ""}></td>
     <td><a href="#" class="text-decoration-none text-accent fw-semibold" data-details="${c.id}" data-name="${esc(c.name)}">${esc(c.name)}</a>
@@ -283,7 +402,16 @@ function renderContainers() {
         <span class="text-nowrap">${actionButtons(c)}</span></div>
     </div></div>`).join("");
 
-  renderPagination();
+  renderContainersPagination();
+}
+
+function renderContainersPagination() {
+  const filtered = filteredContainers();
+  containersPagination.render(
+    $("#pagination-info"), $("#pagination-controls"),
+    $("#btn-page-prev"), $("#btn-page-next"), $("#page-indicator"),
+    "container", filtered
+  );
 }
 
 function updateSelCount() {
@@ -291,311 +419,151 @@ function updateSelCount() {
   $("#btn-backup-selected").disabled = !state.selected.size;
 }
 
-function getTotalPages() {
-  const list = filtered();
-  if (state.pageSize === -1) return 1;
-  return Math.max(1, Math.ceil(list.length / state.pageSize));
-}
-
-function getPaginatedList() {
-  const list = filtered();
-  if (state.pageSize === -1) return list;
-  const start = (state.currentPage - 1) * state.pageSize;
-  return list.slice(start, start + state.pageSize);
-}
-
-function renderPagination() {
-  const list = filtered();
-  const total = list.length;
-  const totalPages = getTotalPages();
-  const isAll = state.pageSize === -1;
-
-  const info = $("#pagination-info");
-  const controls = $("#pagination-controls");
-  const prevBtn = $("#btn-page-prev");
-  const nextBtn = $("#btn-page-next");
-  const indicator = $("#page-indicator");
-
-  if (isAll || totalPages <= 1) {
-    controls.classList.add("d-none");
-    if (isAll) {
-      info.textContent = `Showing all ${total} container${total !== 1 ? "s" : ""}`;
-    } else {
-      info.textContent = `${total} container${total !== 1 ? "s" : ""}`;
-    }
-    return;
-  }
-
-  controls.classList.remove("d-none");
-  const start = (state.currentPage - 1) * state.pageSize + 1;
-  const end = Math.min(state.currentPage * state.pageSize, total);
-  info.textContent = `Showing ${start}–${end} of ${total} container${total !== 1 ? "s" : ""}`;
-
-  prevBtn.disabled = state.currentPage === 1;
-  nextBtn.disabled = state.currentPage === totalPages;
-  indicator.textContent = `Page ${state.currentPage} of ${totalPages}`;
-}
-
-/* delegated events */
-document.addEventListener("click", async e => {
-  const t = e.target.closest("[data-act],[data-logs],[data-details],[data-remove]");
-  if (!t) return;
-  e.preventDefault();
-  if (t.dataset.act) {
-    const act = t.dataset.act, id = t.dataset.id;
-    const doIt = async () => {
-      try { await api(`/api/containers/${id}/${act}`, { method: "POST" });
-            toast(`Container ${act} OK`); setTimeout(loadContainers, 800); }
-      catch (err) { toast(`${act} failed: ${err.message}`, false); }
-    };
-    if (["stop", "restart", "kill"].includes(act))
-      confirmModal(`${act} container`, `Are you sure you want to <b>${act}</b> this container?`,
-                   act, doIt, act === "kill");
-    else doIt();
-  } else if (t.dataset.remove) {
-    const id = t.dataset.remove, name = t.dataset.name;
-    confirmModal("Remove container",
-      `<i class="bi bi-exclamation-triangle text-danger"></i>
-       Are you sure you want to remove container <b>${esc(name)}</b>?<br>
-       <div class="form-check mt-2"><input class="form-check-input" type="checkbox" id="rm-force">
-       <label class="form-check-label" for="rm-force">Force (kill if running)</label></div>
-       <div class="form-check"><input class="form-check-input" type="checkbox" id="rm-vol">
-       <label class="form-check-label" for="rm-vol">Also remove anonymous volumes</label></div>`,
-      "Remove", async () => {
-        try {
-          const f = $("#rm-force")?.checked, v = $("#rm-vol")?.checked;
-          await api(`/api/containers/${id}?force=${!!f}&volumes=${!!v}`, { method: "DELETE" });
-          toast(`Container ${name} removed`); loadContainers();
-        } catch (err) { toast(`Remove failed: ${err.message}`, false); }
-      });
-  } else if (t.dataset.logs) openLogs(t.dataset.logs, t.dataset.name);
-  else if (t.dataset.details) openDetails(t.dataset.details, t.dataset.name);
-});
-document.addEventListener("change", e => {
-  if (e.target.classList?.contains("sel")) {
-    e.target.checked ? state.selected.add(e.target.dataset.id)
-                     : state.selected.delete(e.target.dataset.id);
-    updateSelCount();
-  }
-});
-$("#sel-all").addEventListener("change", e => {
-  filtered().forEach(c => e.target.checked ? state.selected.add(c.id) : state.selected.delete(c.id));
-  renderContainers(); updateSelCount();
-});
-$("#search").addEventListener("input", e => { state.search = e.target.value.toLowerCase(); state.currentPage = 1; renderContainers(); });
-$("#filter-state").addEventListener("change", e => { state.filter = e.target.value; state.currentPage = 1; renderContainers(); });
-$("#sort-by").addEventListener("change", e => { state.sort = e.target.value; state.currentPage = 1; renderContainers(); });
-$("#page-size").addEventListener("change", e => {
-  const val = e.target.value;
-  state.pageSize = val === "all" ? -1 : +val;
-  state.currentPage = 1;
-  renderContainers();
-});
-$("#btn-page-prev").addEventListener("click", () => {
-  if (state.currentPage > 1) { state.currentPage--; renderContainers(); }
-});
-$("#btn-page-next").addEventListener("click", () => {
-  const totalPages = getTotalPages();
-  if (state.currentPage < totalPages) { state.currentPage++; renderContainers(); }
-});
-$("#btn-refresh").addEventListener("click", () => {
-  clearContainerSelection();   // explicit refresh resets stale selections
-  refreshPage();
-});
-$("#set-poll").addEventListener("change", e => {
-  state.pollInterval = Math.max(2, +e.target.value || 5) * 1000; restartPolling();
-});
-
-/* ---------------------------------------------------------------- details */
-async function openDetails(id, name) {
-  $("#details-name").textContent = name;
-  const body = $("#details-body");
-  body.innerHTML = '<div class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm"></div></div>';
-  bootstrap.Modal.getOrCreateInstance("#details-modal").show();
-  try {
-    const d = await api(`/api/containers/${id}`);
-    const kv = (k, v) => `<tr><td class="k text-muted" style="width:220px">${esc(k)}</td><td class="kv">${v}</td></tr>`;
-    const sec = (title, rows) => `<div class="details-section"><h6>${title}</h6>
-      <table class="table table-sm mb-0">${rows}</table></div>`;
-    const envMasked = d.env.map(e => kv(esc(e.key), esc(e.value)));
-    body.innerHTML =
-      sec("General",
-        kv("Name", esc(d.name)) + kv("ID", `<code>${esc(d.id.slice(0, 12))}</code>`) +
-        kv("Image", esc(d.image)) + kv("State", badge(d.state.Status || "")) +
-        kv("Status", esc(d.state.Status)) + kv("Created", fmtDate(d.created)) +
-        kv("Started", fmtDate(d.state.StartedAt)) + kv("Finished", fmtDate(d.state.FinishedAt))) +
-      sec("Configuration",
-        kv("Command", esc((d.cmd || []).join(" ") || "–")) +
-        kv("Entrypoint", esc((d.entrypoint || []).join(" ") || "–")) +
-        kv("Working dir", esc(d.working_dir || "–")) + kv("User", esc(d.user || "root")) +
-        kv("Restart policy", esc(`${d.restart_policy.Name || "no"} ${d.restart_policy.MaximumRetryCount ? `(max ${d.restart_policy.MaximumRetryCount})` : ""}`)) +
-        kv("Env (" + d.env.length + ")",
-           `<button class="btn btn-sm btn-outline-accent" id="reveal-env">show values</button>`) +
-        esc(Object.entries(d.labels).map(([k, v]) => `${k}=${v}`).join(" ") || "")) +
-      `<div class="details-section" id="env-section"><h6>Environment</h6>
-        <table class="table table-sm mb-0" id="env-table">${envMasked.join("") || '<tr><td class="text-muted">none</td></tr>'}</table></div>` +
-      sec("Network",
-        Object.entries(d.networks).map(([n, v]) =>
-          kv(n, esc(`${v.IPAddress || "–"}  ${v.MacAddress || ""}`))).join("") +
-        kv("Ports", Object.entries(d.ports).map(([p, b]) =>
-          esc(p + " → " + (b ? b.map(x => `${x.HostIp || ""}:${x.HostPort}`).join(", ") : "–"))).join("<br>") || "–")) +
-      sec("Mounts",
-        d.mounts.map(m => kv(esc(`${m.Type}: ${m.Name || m.Source}`),
-          esc(`${m.Destination} (${m.RW ? "rw" : "ro"})`))).join("") || '<tr><td class="text-muted">none</td></tr>');
-    $("#reveal-env").addEventListener("click", async () => {
-      if (!confirm("Reveal environment values? They may contain secrets.")) return;
-      const env = await api(`/api/containers/${id}/env`);
-      $("#env-table").innerHTML = env.map(e => kv(esc(e.key), esc(e.value))).join("");
-    });
-  } catch (e) { body.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`; }
-}
-
-/* ------------------------------------------------------------------- logs */
-function openLogs(id, name) {
-  state.logContainer = id;
-  $("#logs-name").textContent = name;
-  $("#logs-download").href = `/api/containers/${id}/logs/download?tail=${$("#logs-tail").value}`;
-  bootstrap.Modal.getOrCreateInstance("#logs-modal").show();
-  loadLogText();
-}
-async function loadLogText() {
-  stopStream();
-  const tail = $("#logs-tail").value;
-  const view = $("#logs-view");
-  view.textContent = "loading…";
-  try {
-    const txt = await (await fetch(`/api/containers/${state.logContainer}/logs?tail=${tail}`)).text();
-    renderLogs(txt);
-  } catch (e) { view.textContent = "Failed to load logs: " + e.message; }
-}
-function renderLogs(txt, append = false) {
-  const view = $("#logs-view");
-  const html = txt.replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s?/g, '<span class="ts">$1</span> ');
-  if (append) view.innerHTML += html; else view.innerHTML = html;
-  if ($("#logs-autoscroll").checked) view.scrollTop = view.scrollHeight;
-}
-function liveStatus(mode) {
-  const el = $("#logs-live-status");
-  if (!mode) { el.className = "live-status d-none"; return; }
-  el.className = `live-status ${mode === "live" ? "on" : "off"}`;
-  el.innerHTML = `<i class="bi bi-circle-fill"></i> ${mode === "live" ? "Live" : "Disconnected"}`;
-}
-function stopStream(keepToggle = false) {
-  if (state.logSocket) {
-    const ws = state.logSocket; state.logSocket = null;
-    ws.onclose = null; ws.onerror = null;   // we closed it on purpose
-    try { ws.close(); } catch {}
-  }
-  if (!keepToggle) $("#logs-live").checked = false;
-  liveStatus(null);
-}
-function startStream() {
-  stopStream(true);
-  liveStatus(null);
-  const id = state.logContainer;
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/api/containers/${id}/logs/stream?tail=0`);
-  state.logSocket = ws;
-  ws.onopen = () => liveStatus("live");
-  ws.onmessage = e => renderLogs(e.data, true);
-  ws.onerror = () => {};
-  ws.onclose = () => {
-    if (state.logSocket !== ws) return;          // superseded by a newer stream
-    state.logSocket = null;
-    $("#logs-live").checked = false;
-    liveStatus("off");
-  };
-}
-$("#logs-live").addEventListener("change", e => e.target.checked ? startStream() : stopStream());
-$("#logs-refresh").addEventListener("click", loadLogText);
-$("#logs-tail").addEventListener("change", () => {
-  $("#logs-download").href = `/api/containers/${state.logContainer}/logs/download?tail=${$("#logs-tail").value}`;
-  if (!$("#logs-live").checked) loadLogText();
-});
-$("#logs-modal").addEventListener("hidden.bs.modal", stopStream);
-
-/* ----------------------------------------------------------------- images */
+/* ---------------------------------------------------------------- images */
 async function loadImages() {
   try {
-    const imgs = await api("/api/images");
-    $("#images-tbody").innerHTML = imgs.map(i => `<tr>
-      <td class="fw-semibold">${esc(i.repo)}${i.dangling ? ' <span class="warn-chip">dangling</span>' : ""}</td>
-      <td>${esc(i.tag)}</td>
-      <td><code class="small">${esc(i.short_id)}</code></td>
-      <td class="small text-muted">${fmtDate(i.created)}</td>
-      <td class="small">${fmtBytes(i.size)}</td>
-      <td>${i.in_use ? '<span class="ok-chip">in use</span>' : "–"}</td>
-      <td class="text-end"><button class="btn btn-sm btn-outline-danger action-btn"
-          data-rmimgid="${esc(i.id)}" data-ref="${esc(i.repo + ":" + i.tag)}"
-          data-inuse="${i.in_use}" data-ntags="${i.tag_count}">
-        <i class="bi bi-trash"></i></button></td></tr>`).join("") ||
-      `<tr><td colspan="7" class="text-center text-muted py-4">No images</td></tr>`;
-    $$("[data-rmimgid]").forEach(b => b.addEventListener("click", () => {
-      const warn = b.dataset.inuse === "true"
-        ? `<div class="alert alert-warning py-2">A container depends on this image — force removal will be used.</div>`
-        : +b.dataset.ntags > 1
-          ? `<div class="alert alert-warning py-2">This image has ${b.dataset.ntags} tags; removing it by ID removes <b>all</b> of them.</div>` : "";
-      confirmModal("Remove image", `${warn}Remove image <b>${esc(b.dataset.ref)}</b> (<code>${esc(b.dataset.rmimgid.slice(0, 19))}…</code>)?`,
-        "Remove", async () => {
-          try { await api(`/api/images/${encodeURIComponent(b.dataset.rmimgid)}?force=${b.dataset.inuse === "true" || +b.dataset.ntags > 1}`, { method: "DELETE" });
-                toast("Image removed"); loadImages(); }
-          catch (e) { toast("Remove failed: " + e.message, false); }
-        });
-    }));
-  } catch (e) { toast("Images: " + e.message, false); }
+    state.images = await api("/api/images");
+  } catch (e) {
+    if ($("#images-tbody")) $("#images-tbody").innerHTML =
+      `<tr><td colspan="7" class="text-center text-danger py-4">${esc(e.message)}</td></tr>`;
+    return;
+  }
+  imagesPagination.resetPage();
+  renderImages();
 }
-$("#btn-pull").addEventListener("click", async () => {
-  const btn = $("#btn-pull");
-  const ref = $("#pull-ref").value.trim();
-  if (!ref || btn.disabled) return;
-  await withBusy(btn, () => withLoading(`Pulling ${ref}…`, async () => {
-    try { await api("/api/images/pull", { method: "POST",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reference: ref }) });
-      toast(`Pulled ${ref}`); loadImages();
-    } catch (e) { toast("Pull failed: " + e.message, false); }
+
+function renderImages() {
+  const filtered = filteredImages();
+  imagesPagination.adjustPage(imagesPagination.getTotalPages(filtered));
+  const list = imagesPagination.getPaginatedList(filtered);
+
+  $("#images-tbody").innerHTML = list.map(i => `<tr>
+    <td class="fw-semibold">${esc(i.repo)}${i.dangling ? ' <span class="warn-chip">dangling</span>' : ""}</td>
+    <td>${esc(i.tag)}</td>
+    <td><code class="small">${esc(i.short_id)}</code></td>
+    <td class="small text-muted">${fmtDate(i.created)}</td>
+    <td class="small">${fmtBytes(i.size)}</td>
+    <td>${i.in_use ? '<span class="ok-chip">in use</span>' : "–"}</td>
+    <td class="text-end"><button class="btn btn-sm btn-outline-danger action-btn"
+        data-rmimgid="${esc(i.id)}" data-ref="${esc(i.repo + ":" + i.tag)}"
+        data-inuse="${i.in_use}" data-ntags="${i.tag_count}">
+      <i class="bi bi-trash"></i></button></td></tr>`).join("") ||
+    `<tr><td colspan="7" class="text-center text-muted py-4">No images</td></tr>`;
+
+  $$("[data-rmimgid]").forEach(b => b.addEventListener("click", () => {
+    const warn = b.dataset.inuse === "true"
+      ? `<div class="alert alert-warning py-2">A container depends on this image — force removal will be used.</div>`
+      : +b.dataset.ntags > 1
+        ? `<div class="alert alert-warning py-2">This image has ${b.dataset.ntags} tags; removing it by ID removes <b>all</b> of them.</div>` : "";
+    confirmModal("Remove image", `${warn}Remove image <b>${esc(b.dataset.ref)}</b> (<code>${esc(b.dataset.rmimgid.slice(0, 19))}…</code>)?`,
+      "Remove", async () => {
+        try { await api(`/api/images/${encodeURIComponent(b.dataset.rmimgid)}?force=${b.dataset.inuse === "true" || +b.dataset.ntags > 1}`, { method: "DELETE" });
+              toast("Image removed"); loadImages(); }
+        catch (e) { toast("Remove failed: " + e.message, false); }
+      });
   }));
-});
+
+  renderImagesPagination();
+}
+
+function renderImagesPagination() {
+  const filtered = filteredImages();
+  imagesPagination.render(
+    $("#images-pagination-info"), $("#images-pagination-controls"),
+    $("#btn-images-page-prev"), $("#btn-images-page-next"), $("#images-page-indicator"),
+    "image", filtered
+  );
+}
 
 /* ---------------------------------------------------------------- volumes */
 async function loadVolumes() {
   try {
-    const vols = await api("/api/volumes");
-    $("#volumes-tbody").innerHTML = vols.map(v => `<tr>
-      <td class="fw-semibold">${esc(v.name)}</td><td>${esc(v.driver)}</td>
-      <td><code class="small">${esc(v.mountpoint)}</code></td>
-      <td class="small">${v.used_by.length ? esc(v.used_by.join(", ")) : '<span class="text-muted">unused</span>'}</td>
-      <td class="text-end"><button class="btn btn-sm btn-outline-danger action-btn" data-rmvol="${esc(v.name)}" ${v.used_by.length ? "disabled title='In use'" : ""}>
-        <i class="bi bi-trash"></i></button></td></tr>`).join("") ||
-      `<tr><td colspan="5" class="text-center text-muted py-4">No volumes</td></tr>`;
-    $$("[data-rmvol]").forEach(b => !b.disabled && b.addEventListener("click", () =>
-      confirmModal("Remove volume", `Remove volume <b>${esc(b.dataset.rmvol)}</b>? Data will be lost.`,
-        "Remove", async () => {
-          try { await api(`/api/volumes/${encodeURIComponent(b.dataset.rmvol)}`, { method: "DELETE" });
-                toast("Volume removed"); loadVolumes(); }
-          catch (e) { toast("Remove failed: " + e.message, false); }
-        })));
-  } catch (e) { toast("Volumes: " + e.message, false); }
+    state.volumes = await api("/api/volumes");
+  } catch (e) {
+    if ($("#volumes-tbody")) $("#volumes-tbody").innerHTML =
+      `<tr><td colspan="5" class="text-center text-danger py-4">${esc(e.message)}</td></tr>`;
+    return;
+  }
+  volumesPagination.resetPage();
+  renderVolumes();
+}
+
+function renderVolumes() {
+  const filtered = filteredVolumes();
+  volumesPagination.adjustPage(volumesPagination.getTotalPages(filtered));
+  const list = volumesPagination.getPaginatedList(filtered);
+
+  $("#volumes-tbody").innerHTML = list.map(v => `<tr>
+    <td class="fw-semibold">${esc(v.name)}</td><td>${esc(v.driver)}</td>
+    <td><code class="small">${esc(v.mountpoint)}</code></td>
+    <td class="small">${v.used_by.length ? esc(v.used_by.join(", ")) : '<span class="text-muted">unused</span>'}</td>
+    <td class="text-end"><button class="btn btn-sm btn-outline-danger action-btn" data-rmvol="${esc(v.name)}" ${v.used_by.length ? "disabled title='In use'" : ""}>
+      <i class="bi bi-trash"></i></button></td></tr>`).join("") ||
+    `<tr><td colspan="5" class="text-center text-muted py-4">No volumes</td></tr>`;
+
+  $$("[data-rmvol]").forEach(b => !b.disabled && b.addEventListener("click", () =>
+    confirmModal("Remove volume", `Remove volume <b>${esc(b.dataset.rmvol)}</b>? Data will be lost.`,
+      "Remove", async () => {
+        try { await api(`/api/volumes/${encodeURIComponent(b.dataset.rmvol)}`, { method: "DELETE" });
+              toast("Volume removed"); loadVolumes(); }
+        catch (e) { toast("Remove failed: " + e.message, false); }
+      })));
+
+  renderVolumesPagination();
+}
+
+function renderVolumesPagination() {
+  const filtered = filteredVolumes();
+  volumesPagination.render(
+    $("#volumes-pagination-info"), $("#volumes-pagination-controls"),
+    $("#btn-volumes-page-prev"), $("#btn-volumes-page-next"), $("#volumes-page-indicator"),
+    "volume", filtered
+  );
 }
 
 /* ---------------------------------------------------------------- networks */
 async function loadNetworks() {
   try {
-    const nets = await api("/api/networks");
-    $("#networks-tbody").innerHTML = nets.map(n => `<tr>
-      <td class="fw-semibold">${esc(n.name)}</td><td>${esc(n.driver)}</td>
-      <td class="small">${esc(n.subnet || "–")}</td><td class="small">${esc(n.gateway || "–")}</td>
-      <td class="small">${esc(n.containers.join(", ") || "–")}</td>
-      <td class="text-end">${["bridge","host","none"].includes(n.name) ? "" :
-        `<button class="btn btn-sm btn-outline-danger action-btn" data-rmnet="${esc(n.name)}"><i class="bi bi-trash"></i></button>`}</td></tr>`).join("");
-    $$("[data-rmnet]").forEach(b => b.addEventListener("click", () =>
-      confirmModal("Remove network", `Remove network <b>${esc(b.dataset.rmnet)}</b>?`,
-        "Remove", async () => {
-          try { await api(`/api/networks/${encodeURIComponent(b.dataset.rmnet)}`, { method: "DELETE" });
-                toast("Network removed"); loadNetworks(); }
-          catch (e) { toast("Remove failed: " + e.message, false); }
-        })));
-  } catch (e) { toast("Networks: " + e.message, false); }
+    state.networks = await api("/api/networks");
+  } catch (e) {
+    if ($("#networks-tbody")) $("#networks-tbody").innerHTML =
+      `<tr><td colspan="6" class="text-center text-danger py-4">${esc(e.message)}</td></tr>`;
+    return;
+  }
+  networksPagination.resetPage();
+  renderNetworks();
+}
+
+function renderNetworks() {
+  const filtered = filteredNetworks();
+  networksPagination.adjustPage(networksPagination.getTotalPages(filtered));
+  const list = networksPagination.getPaginatedList(filtered);
+
+  $("#networks-tbody").innerHTML = list.map(n => `<tr>
+    <td class="fw-semibold">${esc(n.name)}</td><td>${esc(n.driver)}</td>
+    <td class="small">${esc(n.subnet || "–")}</td><td class="small">${esc(n.gateway || "–")}</td>
+    <td class="small">${esc(n.containers.join(", ") || "–")}</td>
+    <td class="text-end">${["bridge","host","none"].includes(n.name) ? "" :
+      `<button class="btn btn-sm btn-outline-danger action-btn" data-rmnet="${esc(n.name)}"><i class="bi bi-trash"></i></button>`}</td></tr>`).join("");
+
+  $$("[data-rmnet]").forEach(b => b.addEventListener("click", () =>
+    confirmModal("Remove network", `Remove network <b>${esc(b.dataset.rmnet)}</b>?`,
+      "Remove", async () => {
+        try { await api(`/api/networks/${encodeURIComponent(b.dataset.rmnet)}`, { method: "DELETE" });
+              toast("Network removed"); loadNetworks(); }
+        catch (e) { toast("Remove failed: " + e.message, false); }
+      })));
+
+  renderNetworksPagination();
+}
+
+function renderNetworksPagination() {
+  const filtered = filteredNetworks();
+  networksPagination.render(
+    $("#networks-pagination-info"), $("#networks-pagination-controls"),
+    $("#btn-networks-page-prev"), $("#btn-networks-page-next"), $("#networks-page-indicator"),
+    "network", filtered
+  );
 }
 
 /* ----------------------------------------------------------------- backup */
@@ -746,6 +714,148 @@ function renderRestorePreview(s, downloadUrl, storedName, uploadFile) {
     finally { btn.disabled = false; }
   });
 }
+
+/* delegated events */
+document.addEventListener("click", async e => {
+  const t = e.target.closest("[data-act],[data-logs],[data-details],[data-remove]");
+  if (!t) return;
+  e.preventDefault();
+  if (t.dataset.act) {
+    const act = t.dataset.act, id = t.dataset.id;
+    const doIt = async () => {
+      try { await api(`/api/containers/${id}/${act}`, { method: "POST" });
+            toast(`Container ${act} OK`); setTimeout(loadContainers, 800); }
+      catch (err) { toast(`${act} failed: ${err.message}`, false); }
+    };
+    if (["stop", "restart", "kill"].includes(act))
+      confirmModal(`${act} container`, `Are you sure you want to <b>${act}</b> this container?`,
+                   act, doIt, act === "kill");
+    else doIt();
+  } else if (t.dataset.remove) {
+    const id = t.dataset.remove, name = t.dataset.name;
+    confirmModal("Remove container",
+      `<i class="bi bi-exclamation-triangle text-danger"></i>
+       Are you sure you want to remove container <b>${esc(name)}</b>?<br>
+       <div class="form-check mt-2"><input class="form-check-input" type="checkbox" id="rm-force">
+       <label class="form-check-label" for="rm-force">Force (kill if running)</label></div>
+       <div class="form-check"><input class="form-check-input" type="checkbox" id="rm-vol">
+       <label class="form-check-label" for="rm-vol">Also remove anonymous volumes</label></div>`,
+      "Remove", async () => {
+        try {
+          const f = $("#rm-force")?.checked, v = $("#rm-vol")?.checked;
+          await api(`/api/containers/${id}?force=${!!f}&volumes=${!!v}`, { method: "DELETE" });
+          toast(`Container ${name} removed`); loadContainers();
+        } catch (err) { toast(`Remove failed: ${err.message}`, false); }
+      });
+  } else if (t.dataset.logs) openLogs(t.dataset.logs, t.dataset.name);
+  else if (t.dataset.details) openDetails(t.dataset.details, t.dataset.name);
+});
+document.addEventListener("change", e => {
+  if (e.target.classList?.contains("sel")) {
+    e.target.checked ? state.selected.add(e.target.dataset.id)
+                     : state.selected.delete(e.target.dataset.id);
+    updateSelCount();
+  }
+});
+$("#sel-all").addEventListener("change", e => {
+  filteredContainers().forEach(c => e.target.checked ? state.selected.add(c.id) : state.selected.delete(c.id));
+  renderContainers(); updateSelCount();
+});
+
+/* Containers page controls */
+$("#search").addEventListener("input", e => { state.search = e.target.value.toLowerCase(); containersPagination.resetPage(); renderContainers(); });
+$("#filter-state").addEventListener("change", e => { state.filter = e.target.value; containersPagination.resetPage(); renderContainers(); });
+$("#sort-by").addEventListener("change", e => { state.sort = e.target.value; containersPagination.resetPage(); renderContainers(); });
+$("#page-size").addEventListener("change", e => {
+  const val = e.target.value;
+  containersPagination.pageSize = val === "all" ? -1 : +val;
+  containersPagination.resetPage();
+  renderContainers();
+});
+$("#btn-page-prev").addEventListener("click", () => {
+  if (containersPagination.currentPage > 1) { containersPagination.currentPage--; renderContainers(); }
+});
+$("#btn-page-next").addEventListener("click", () => {
+  const totalPages = containersPagination.getTotalPages(filteredContainers());
+  if (containersPagination.currentPage < totalPages) { containersPagination.currentPage++; renderContainers(); }
+});
+
+/* Dashboard containers overview controls */
+$("#dashboard-search").addEventListener("input", e => { state.search = e.target.value.toLowerCase(); containersPagination.resetPage(); renderSummary(); });
+$("#dashboard-filter-state").addEventListener("change", e => { state.filter = e.target.value; containersPagination.resetPage(); renderSummary(); });
+$("#dashboard-sort-by").addEventListener("change", e => { state.sort = e.target.value; containersPagination.resetPage(); renderSummary(); });
+$("#dashboard-page-size").addEventListener("change", e => {
+  const val = e.target.value;
+  containersPagination.pageSize = val === "all" ? -1 : +val;
+  containersPagination.resetPage();
+  renderSummary();
+});
+$("#btn-dashboard-page-prev").addEventListener("click", () => {
+  if (containersPagination.currentPage > 1) { containersPagination.currentPage--; renderSummary(); }
+});
+$("#btn-dashboard-page-next").addEventListener("click", () => {
+  const totalPages = containersPagination.getTotalPages(filteredContainers());
+  if (containersPagination.currentPage < totalPages) { containersPagination.currentPage++; renderSummary(); }
+});
+
+/* Images page controls */
+$("#images-search").addEventListener("input", e => { state.imagesSearch = e.target.value.toLowerCase(); imagesPagination.resetPage(); renderImages(); });
+$("#images-sort-by").addEventListener("change", e => { state.imagesSort = e.target.value; imagesPagination.resetPage(); renderImages(); });
+$("#images-page-size").addEventListener("change", e => {
+  const val = e.target.value;
+  imagesPagination.pageSize = val === "all" ? -1 : +val;
+  imagesPagination.resetPage();
+  renderImages();
+});
+$("#btn-images-page-prev").addEventListener("click", () => {
+  if (imagesPagination.currentPage > 1) { imagesPagination.currentPage--; renderImages(); }
+});
+$("#btn-images-page-next").addEventListener("click", () => {
+  const totalPages = imagesPagination.getTotalPages(filteredImages());
+  if (imagesPagination.currentPage < totalPages) { imagesPagination.currentPage++; renderImages(); }
+});
+
+/* Volumes page controls */
+$("#volumes-search").addEventListener("input", e => { state.volumesSearch = e.target.value.toLowerCase(); volumesPagination.resetPage(); renderVolumes(); });
+$("#volumes-sort-by").addEventListener("change", e => { state.volumesSort = e.target.value; volumesPagination.resetPage(); renderVolumes(); });
+$("#volumes-page-size").addEventListener("change", e => {
+  const val = e.target.value;
+  volumesPagination.pageSize = val === "all" ? -1 : +val;
+  volumesPagination.resetPage();
+  renderVolumes();
+});
+$("#btn-volumes-page-prev").addEventListener("click", () => {
+  if (volumesPagination.currentPage > 1) { volumesPagination.currentPage--; renderVolumes(); }
+});
+$("#btn-volumes-page-next").addEventListener("click", () => {
+  const totalPages = volumesPagination.getTotalPages(filteredVolumes());
+  if (volumesPagination.currentPage < totalPages) { volumesPagination.currentPage++; renderVolumes(); }
+});
+
+/* Networks page controls */
+$("#networks-search").addEventListener("input", e => { state.networksSearch = e.target.value.toLowerCase(); networksPagination.resetPage(); renderNetworks(); });
+$("#networks-sort-by").addEventListener("change", e => { state.networksSort = e.target.value; networksPagination.resetPage(); renderNetworks(); });
+$("#networks-page-size").addEventListener("change", e => {
+  const val = e.target.value;
+  networksPagination.pageSize = val === "all" ? -1 : +val;
+  networksPagination.resetPage();
+  renderNetworks();
+});
+$("#btn-networks-page-prev").addEventListener("click", () => {
+  if (networksPagination.currentPage > 1) { networksPagination.currentPage--; renderNetworks(); }
+});
+$("#btn-networks-page-next").addEventListener("click", () => {
+  const totalPages = networksPagination.getTotalPages(filteredNetworks());
+  if (networksPagination.currentPage < totalPages) { networksPagination.currentPage++; renderNetworks(); }
+});
+
+$("#btn-refresh").addEventListener("click", () => {
+  clearContainerSelection();   // explicit refresh resets stale selections
+  refreshPage();
+});
+$("#set-poll").addEventListener("change", e => {
+  state.pollInterval = Math.max(2, +e.target.value || 5) * 1000; restartPolling();
+});
 
 /* --------------------------------------------------------------- polling */
 let pollTimer = null;

@@ -51,7 +51,40 @@
   <section id="page-dashboard" class="page">
     <div class="row g-3" id="summary-cards"></div>
     <h6 class="mt-4 mb-2 text-muted">Containers overview</h6>
+    <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+      <div class="input-group search-box" style="max-width:300px">
+        <span class="input-group-text"><i class="bi bi-search"></i></span>
+        <input class="form-control form-control-sm" id="dashboard-search" placeholder="Search containers…" aria-label="Search containers">
+      </div>
+      <select class="form-select form-select-sm w-auto" id="dashboard-filter-state" aria-label="Filter by state">
+        <option value="all">All</option><option value="running">Running</option>
+        <option value="exited">Exited</option><option value="stopped">Stopped</option>
+        <option value="restarting">Restarting</option><option value="paused">Paused</option>
+      </select>
+      <select class="form-select form-select-sm w-auto" id="dashboard-sort-by" aria-label="Sort by">
+        <option value="name">Sort: Name</option><option value="state">Status</option>
+        <option value="cpu">CPU</option><option value="mem">Memory</option>
+        <option value="created">Created</option>
+      </select>
+      <div class="ms-auto d-flex gap-2 align-items-center">
+        <label class="form-label mb-0 small text-muted" for="dashboard-page-size" title="Containers per page">Show</label>
+        <select class="form-select form-select-sm w-auto" id="dashboard-page-size" aria-label="Containers per page">
+          <option value="10" selected>10</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+    </div>
     <div id="dashboard-list"></div>
+    <nav class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-2" id="dashboard-pagination" aria-label="Dashboard containers pagination">
+      <div class="d-flex align-items-center gap-2 small text-muted" id="dashboard-pagination-info"></div>
+      <div class="btn-group btn-group-sm" id="dashboard-pagination-controls" role="group" aria-label="Pagination">
+        <button class="btn btn-outline-accent" id="btn-dashboard-page-prev" aria-label="Previous page"><i class="bi bi-chevron-left"></i></button>
+        <span class="btn btn-outline-accent disabled" id="dashboard-page-indicator" aria-live="polite"></span>
+        <button class="btn btn-outline-accent" id="btn-dashboard-page-next" aria-label="Next page"><i class="bi bi-chevron-right"></i></button>
+      </div>
+    </nav>
   </section>
 
   <!-- ================================================== CONTAINERS -->
@@ -109,9 +142,25 @@
 
   <!-- ================================================== IMAGES -->
   <section id="page-images" class="page d-none">
-    <div class="d-flex gap-2 mb-3">
-      <input class="form-control search-box" id="pull-ref" placeholder="e.g. nginx:latest">
-      <button class="btn btn-accent" id="btn-pull"><i class="bi bi-cloud-download"></i> Pull</button>
+    <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+      <div class="input-group search-box" style="max-width:300px">
+        <span class="input-group-text"><i class="bi bi-search"></i></span>
+        <input class="form-control form-control-sm" id="images-search" placeholder="Search images…" aria-label="Search images">
+      </div>
+      <select class="form-select form-select-sm w-auto" id="images-sort-by" aria-label="Sort images by">
+        <option value="repo">Sort: Repository</option><option value="tag">Tag</option>
+        <option value="created">Created</option><option value="size">Size</option>
+      </select>
+      <div class="ms-auto d-flex gap-2 align-items-center">
+        <label class="form-label mb-0 small text-muted" for="images-page-size" title="Images per page">Show</label>
+        <select class="form-select form-select-sm w-auto" id="images-page-size" aria-label="Images per page">
+          <option value="10" selected>10</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="all">All</option>
+        </select>
+        <button class="btn btn-accent" id="btn-pull"><i class="bi bi-cloud-download"></i> Pull</button>
+      </div>
     </div>
     <div class="card dm-card"><div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
@@ -119,26 +168,86 @@
         <tbody id="images-tbody"></tbody>
       </table>
     </div></div>
+    <nav class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-2" id="images-pagination" aria-label="Images pagination">
+      <div class="d-flex align-items-center gap-2 small text-muted" id="images-pagination-info"></div>
+      <div class="btn-group btn-group-sm" id="images-pagination-controls" role="group" aria-label="Pagination">
+        <button class="btn btn-outline-accent" id="btn-images-page-prev" aria-label="Previous page"><i class="bi bi-chevron-left"></i></button>
+        <span class="btn btn-outline-accent disabled" id="images-page-indicator" aria-live="polite"></span>
+        <button class="btn btn-outline-accent" id="btn-images-page-next" aria-label="Next page"><i class="bi bi-chevron-right"></i></button>
+      </div>
+    </nav>
   </section>
 
   <!-- ================================================== VOLUMES -->
   <section id="page-volumes" class="page d-none">
+    <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+      <div class="input-group search-box" style="max-width:300px">
+        <span class="input-group-text"><i class="bi bi-search"></i></span>
+        <input class="form-control form-control-sm" id="volumes-search" placeholder="Search volumes…" aria-label="Search volumes">
+      </div>
+      <select class="form-select form-select-sm w-auto" id="volumes-sort-by" aria-label="Sort volumes by">
+        <option value="name">Sort: Name</option><option value="driver">Driver</option>
+      </select>
+      <div class="ms-auto d-flex gap-2 align-items-center">
+        <label class="form-label mb-0 small text-muted" for="volumes-page-size" title="Volumes per page">Show</label>
+        <select class="form-select form-select-sm w-auto" id="volumes-page-size" aria-label="Volumes per page">
+          <option value="10" selected>10</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+    </div>
     <div class="card dm-card"><div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
         <thead><tr><th>Name</th><th>Driver</th><th>Mountpoint</th><th>Used by</th><th class="text-end">Actions</th></tr></thead>
         <tbody id="volumes-tbody"></tbody>
       </table>
     </div></div>
+    <nav class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-2" id="volumes-pagination" aria-label="Volumes pagination">
+      <div class="d-flex align-items-center gap-2 small text-muted" id="volumes-pagination-info"></div>
+      <div class="btn-group btn-group-sm" id="volumes-pagination-controls" role="group" aria-label="Pagination">
+        <button class="btn btn-outline-accent" id="btn-volumes-page-prev" aria-label="Previous page"><i class="bi bi-chevron-left"></i></button>
+        <span class="btn btn-outline-accent disabled" id="volumes-page-indicator" aria-live="polite"></span>
+        <button class="btn btn-outline-accent" id="btn-volumes-page-next" aria-label="Next page"><i class="bi bi-chevron-right"></i></button>
+      </div>
+    </nav>
   </section>
 
   <!-- ================================================== NETWORKS -->
   <section id="page-networks" class="page d-none">
+    <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+      <div class="input-group search-box" style="max-width:300px">
+        <span class="input-group-text"><i class="bi bi-search"></i></span>
+        <input class="form-control form-control-sm" id="networks-search" placeholder="Search networks…" aria-label="Search networks">
+      </div>
+      <select class="form-select form-select-sm w-auto" id="networks-sort-by" aria-label="Sort networks by">
+        <option value="name">Sort: Name</option><option value="driver">Driver</option>
+      </select>
+      <div class="ms-auto d-flex gap-2 align-items-center">
+        <label class="form-label mb-0 small text-muted" for="networks-page-size" title="Networks per page">Show</label>
+        <select class="form-select form-select-sm w-auto" id="networks-page-size" aria-label="Networks per page">
+          <option value="10" selected>10</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+    </div>
     <div class="card dm-card"><div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
         <thead><tr><th>Name</th><th>Driver</th><th>Subnet</th><th>Gateway</th><th>Connected containers</th><th class="text-end">Actions</th></tr></thead>
         <tbody id="networks-tbody"></tbody>
       </table>
     </div></div>
+    <nav class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-2" id="networks-pagination" aria-label="Networks pagination">
+      <div class="d-flex align-items-center gap-2 small text-muted" id="networks-pagination-info"></div>
+      <div class="btn-group btn-group-sm" id="networks-pagination-controls" role="group" aria-label="Pagination">
+        <button class="btn btn-outline-accent" id="btn-networks-page-prev" aria-label="Previous page"><i class="bi bi-chevron-left"></i></button>
+        <span class="btn btn-outline-accent disabled" id="networks-page-indicator" aria-live="polite"></span>
+        <button class="btn btn-outline-accent" id="btn-networks-page-next" aria-label="Next page"><i class="bi bi-chevron-right"></i></button>
+      </div>
+    </nav>
   </section>
 
   <!-- ================================================== BACKUPS -->
