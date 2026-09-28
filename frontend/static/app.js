@@ -13,6 +13,7 @@ const state = {
   networksPageSize: 10, networksCurrentPage: 1,
   selected: new Set(), restoreFile: null, restoreBuffer: null,
   logSocket: null, logContainer: null, pendingConfirm: null,
+  containersInitialLoadComplete: false,
 };
 
 const $ = s => document.querySelector(s);
@@ -232,13 +233,15 @@ async function loadSystem() {
 
 /* ------------------------------------------------------------- containers */
 async function loadContainers() {
-  // Show loading state immediately for dashboard
-  if (state.page === "dashboard") showDashboardLoading(true);
+  const isInitialLoad = !state.containersInitialLoadComplete;
+  const showDashboardLoader = state.page === "dashboard" && isInitialLoad;
+
+  if (showDashboardLoader) showDashboardLoading(true);
 
   try {
     state.containers = await api("/api/containers");
   } catch (e) {
-    if (state.page === "dashboard") showDashboardLoading(false);
+    if (showDashboardLoader) showDashboardLoading(false);
     if ($("#container-tbody")) $("#container-tbody").innerHTML =
       `<tr><td colspan="9" class="text-center text-danger py-4">${esc(e.message)}</td></tr>`;
     return;
@@ -248,12 +251,17 @@ async function loadContainers() {
   for (const id of [...state.selected]) if (!ids.has(id)) state.selected.delete(id);
   containersPagination.resetPage();
   if (state.page === "dashboard") {
-    showDashboardLoading(false);
+    if (showDashboardLoader) showDashboardLoading(false);
     renderSummary();
   } else {
     renderSummary(); renderContainers();
   }
   updateSelCount();
+
+  // Mark initial load as complete after first successful load
+  if (isInitialLoad) {
+    state.containersInitialLoadComplete = true;
+  }
 }
 
 /* Single point to reset the container selection: IDs, checkboxes,
