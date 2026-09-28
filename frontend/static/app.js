@@ -1,0 +1,696 @@
+"use strict";
+/* Docker Manager frontend — vanilla JS, Bootstrap 5 */
+
+const state = {
+  containers: [], pollInterval: 5000, page: "dashboard",
+  search: "", filter: "all", sort: "name",
+  selected: new Set(), restoreFile: null, restoreBuffer: null,
+  logSocket: null, logContainer: null, pendingConfirm: null,
+};
+
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+
+/* ---------------------------------------------------------------- helpers */
+const fmtBytes = b => {
+  if (!b && b !== 0) return "–";
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return (i === 0 ? b : b.toFixed(1)) + " " + u[i];
+};
+const fmtDate = d => d && !d.startsWith("0001") ? new Date(d).toLocaleString() : "–";
+const fmtUptime = (started) => {
+  if (!started || started.startsWith("0001")) return "–";
+  let s = Math.max(0, (Date.now() - new Date(started)) / 1000);
+  const d = Math.floor(s / 86400); s %= 86400;
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m ${Math.floor(s % 60)}s`;
+};
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    let msg = `${r.status}`;
+    try { msg = (await r.json()).detail || msg; } catch {}
+    throw new Error(msg);
+  }
+  return r.headers.get("content-type")?.includes("json") ? r.json() : r;
+}
+
+function toast(msg, ok = true) {
+  const el = document.createElement("div");
+  el.className = `toast text-bg-${ok ? "success" : "danger"}`;
+  el.innerHTML = `<div class="toast-body"><i class="bi bi-${ok ? "check-circle" : "exclamation-triangle"}"></i> ${esc(msg)}</div>`;
+  $("#toasts").appendChild(el);
+  const t = new bootstrap.Toast(el, { delay: 4000 }); t.show();
+  el.addEventListener("hidden.bs.toast", () => el.remove());
+}
+
+/* ------- global non-blocking operation indicator (header progress bar) -- */
+/* Global state lives in the header, independent of any page — operations
+   keep running and the indicator stays visible while the user navigates. */
+function showLoading(message) {
+  const msg = message || "Working…";
+  $("#global-progress-label").textContent = msg;
+  $("#global-progress .progress-bar").setAttribute("aria-label", msg.replace(/…$/, ""));
+  $("#global-progress").classList.remove("d-none");
+  document.querySelector(".topbar").setAttribute("aria-busy", "true");
+}
+function hideLoading() {
+  $("#global-progress").classList.add("d-none");
+  document.querySelector(".topbar").removeAttribute("aria-busy");
+}
+/* Temporarily disable a button while running fn; always restored. */
+async function withBusy(btn, fn) {
+  if (btn && btn.disabled) return;               // no duplicate requests
+  if (btn) btn.disabled = true;
+  try { return await fn(); }
+  finally { if (btn) btn.disabled = false; }
+}
+/* Show the header progress indicator around fn; ALWAYS hidden afterwards. */
+async function withLoading(message, fn) {
+  showLoading(message);
+  try { return await fn(); }
+  finally { hideLoading(); }
+}
+
+function confirmModal(title, body, okLabel, cb, danger = true) {
+  $("#confirm-title").textContent = title;
+  $("#confirm-body").innerHTML = body;
+  const ok = $("#confirm-ok");
+  ok.textContent = okLabel || "Confirm";
+  ok.className = `btn btn-sm btn-${danger ? "danger" : "warning"}`;
+  state.pendingConfirm = cb;
+  bootstrap.Modal.getOrCreateInstance("#confirm-modal").show();
+}
+$("#confirm-ok").addEventListener("click", () => {
+  bootstrap.Modal.getInstance("#confirm-modal").hide();
+  if (state.pendingConfirm) { const cb = state.pendingConfirm; state.pendingConfirm = null; cb(); }
+});
+
+/* ------------------------------------------------------------------ nav */
+$$("#main-tabs .nav-link").forEach(btn => btn.addEventListener("click", () => {
+  $$("#main-tabs .nav-link").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  state.page = btn.dataset.page;
+  $$(".page").forEach(p => p.classList.add("d-none"));
+  $(`#page-${state.page}`).classList.remove("d-none");
+  clearContainerSelection();   // selection never persists across page changes
+  refreshPage();
+}));
+
+function refreshPage() {
+  loadSystem();
+  ({ dashboard: loadContainers, containers: loadContainers, images: loadImages,
+     volumes: loadVolumes, networks: loadNetworks, backups: loadBackups,
+     about: loadSystem }[state.page] || (() => {}))();
+}
+
+/* ---------------------------------------------------------------- system */
+async function loadSystem() {
+  try {
+    const d = await api("/api/system");
+    $("#app-name").textContent = d.settings.app_name;
+    document.title = d.settings.app_name;
+    state.settings = d.settings;
+    const st = $("#engine-status");
+    if (d.engine.connected) {
+      st.className = "engine-status ok";
+      st.innerHTML = `<i class="bi bi-circle-fill"></i> Engine ${esc(d.engine.version)}`;
+      $("#engine-footer").innerHTML =
+        `<i class="bi bi-motherboard"></i> Docker ${esc(d.engine.version)} · API ${esc(d.engine.api)} · ${esc(d.engine.os)}`;
+    } else {
+      st.className = "engine-status err";
+      st.innerHTML = `<i class="bi bi-circle-fill"></i> disconnected`;
+      $("#engine-footer").innerHTML = `<i class="bi bi-motherboard"></i> Docker Engine unavailable`;
+    }
+    $("#app-version").textContent = `V.${d.settings.app_version || "—"}`;
+    $("#set-poll").value = Math.round(state.pollInterval / 1000);
+    $("#settings-list").innerHTML = [
+      ["Application name", d.settings.app_name],
+      ["Backup directory", d.settings.backup_dir],
+      ["Max upload (MB)", d.settings.max_upload_mb],
+      ["Default log lines", d.settings.log_default_lines],
+      ["Authentication", d.settings.auth_enabled
+        ? '<span class="ok-chip">enabled</span>'
+        : '<span class="warn-chip">disabled — restrict to trusted LAN</span>'],
+    ].map(([k, v]) => `<dt class="col-sm-4 text-muted">${k}</dt><dd class="col-sm-8">${v}</dd>`).join("");
+  } catch (e) { /* backend down */ }
+}
+
+/* ------------------------------------------------------------- containers */
+async function loadContainers() {
+  try {
+    state.containers = await api("/api/containers");
+  } catch (e) {
+    if ($("#container-tbody")) $("#container-tbody").innerHTML =
+      `<tr><td colspan="9" class="text-center text-danger py-4">${esc(e.message)}</td></tr>`;
+    return;
+  }
+  // Drop selections pointing at containers that no longer exist (stale state).
+  const ids = new Set(state.containers.map(c => c.id));
+  for (const id of [...state.selected]) if (!ids.has(id)) state.selected.delete(id);
+  renderSummary(); renderContainers(); updateSelCount();
+}
+
+/* Single point to reset the container selection: IDs, checkboxes,
+   counter and the "Backup selected" button. */
+function clearContainerSelection() {
+  if (!state.selected.size) return;
+  state.selected.clear();
+  $$(".sel").forEach(cb => { cb.checked = false; });
+  const all = $("#sel-all"); if (all) all.checked = false;
+  updateSelCount();
+}
+
+function filtered() {
+  let list = state.containers.filter(c =>
+    (!state.search || c.name.toLowerCase().includes(state.search)
+                     || c.image.toLowerCase().includes(state.search)) &&
+    (state.filter === "all" ||
+     (state.filter === "stopped" ? ["exited", "created", "dead"].includes(c.state)
+                                 : c.state === state.filter)));
+  const key = { name: c => c.name.toLowerCase(), state: c => c.state,
+    cpu: c => -(c.stats?.cpu_percent || 0), mem: c => -(c.stats?.mem_usage || 0),
+    created: c => -(Date.parse(c.created) || 0) }[state.sort];
+  return [...list].sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+}
+
+const badge = st => `<span class="badge badge-state st-${esc(st)}">${esc(st.toUpperCase())}</span>`;
+
+/* Published container ports. TCP ports are clickable and open the service on
+   the same host address as this web app, never assuming localhost. */
+function renderPorts(c) {
+  const ports = c.ports || {};
+  const out = [];
+  for (const [cport, bindings] of Object.entries(ports)) {
+    if (!bindings || !bindings.length) continue;             // unpublished
+    const proto = (cport.split("/")[1] || "tcp").toLowerCase();
+    for (const b of bindings) {
+      if (!b.HostPort) continue;
+      const label = `${b.HostPort}:${cport}`;
+      const isHttp = proto === "tcp";
+      const https = /443$/.test(cport.split("/")[0]) || ["443", "8443"].includes(b.HostPort);
+      if (isHttp) {
+        const url = `${https ? "https" : "http"}://${location.hostname}:${b.HostPort}`;
+        out.push(`<a class="port-chip" href="${esc(url)}" target="_blank" rel="noopener"
+                    title="Open ${esc(url)}">${esc(label)} <i class="bi bi-box-arrow-up-right"></i></a>`);
+      } else {
+        out.push(`<span class="port-chip">${esc(label)}</span>`);
+      }
+    }
+  }
+  return out.join("") || '<span class="text-muted small">–</span>';
+}
+
+function actionButtons(c) {
+  const id = c.id, n = esc(c.name);
+  const btn = (act, icon, title, cls = "btn-outline-accent") =>
+    `<button class="btn btn-sm ${cls} action-btn" data-act="${act}" data-id="${id}" title="${title}"><i class="bi bi-${icon}"></i></button>`;
+  let html = "";
+  if (c.state === "running") {
+    html += btn("restart", "arrow-repeat", "Restart") + btn("pause", "pause", "Pause") +
+            btn("stop", "stop-fill", "Stop");
+  } else if (c.state === "paused") {
+    html += btn("unpause", "play-fill", "Unpause") + btn("stop", "stop-fill", "Stop");
+  } else {
+    html += btn("start", "play-fill", "Start");
+  }
+  html += `<button class="btn btn-sm btn-outline-accent action-btn" data-logs="${id}" data-name="${n}" title="Logs"><i class="bi bi-terminal"></i></button>`;
+  html += `<button class="btn btn-sm btn-outline-accent action-btn" data-details="${id}" data-name="${n}" title="Details"><i class="bi bi-info-circle"></i></button>`;
+  html += `<button class="btn btn-sm btn-outline-danger action-btn" data-remove="${id}" data-name="${n}" title="Remove"><i class="bi bi-trash"></i></button>`;
+  return html;
+}
+
+function renderSummary() {
+  const c = state.containers;
+  const cnt = f => c.filter(f).length;
+  const running = c.filter(x => x.state === "running");
+  const cpu = running.reduce((s, x) => s + (x.stats?.cpu_percent || 0), 0);
+  const mem = running.reduce((s, x) => s + (x.stats?.mem_usage || 0), 0);
+  const cards = [
+    ["Total", c.length, "boxes"], ["Running", running.length, "play-circle"],
+    ["Stopped", cnt(x => ["exited", "created", "dead"].includes(x.state)), "stop-circle"],
+    ["Restarting", cnt(x => x.state === "restarting"), "arrow-repeat"],
+    ["CPU", cpu.toFixed(1) + "%", "cpu"], ["Memory", fmtBytes(mem), "memory"],
+  ];
+  $("#summary-cards").innerHTML = cards.map(([l, v, i]) => `
+    <div class="col-6 col-md-4 col-lg-2"><div class="dm-card stat-card">
+      <div class="value"><i class="bi bi-${i} text-accent"></i> ${v}</div>
+      <div class="label">${l}</div></div></div>`).join("");
+  $("#dashboard-list").innerHTML = `<div class="card dm-card"><div class="table-responsive">
+    <table class="table table-hover align-middle mb-0"><tbody>` +
+    c.slice(0, 10).map(x => `<tr>
+      <td><i class="bi bi-box-seam text-accent"></i> <b>${esc(x.name)}</b></td>
+      <td class="text-muted">${esc(x.image)}</td><td>${badge(x.state)}</td>
+      <td class="text-muted">${x.stats?.cpu_percent ?? "–"}%</td>
+      <td class="text-muted">${fmtBytes(x.stats?.mem_usage)}</td>
+    </tr>`).join("") + "</tbody></table></div></div>";
+}
+
+function renderContainers() {
+  const list = filtered();
+  $("#container-tbody").innerHTML = list.map(c => `<tr>
+    <td><input class="form-check-input sel" type="checkbox" data-id="${c.id}" ${state.selected.has(c.id) ? "checked" : ""}></td>
+    <td><a href="#" class="text-decoration-none text-accent fw-semibold" data-details="${c.id}" data-name="${esc(c.name)}">${esc(c.name)}</a>
+        <div class="text-muted small">${esc(c.short_id)}</div></td>
+    <td class="text-muted small">${esc(c.image)}</td>
+    <td>${badge(c.state)}${c.restart_count ? ` <span class="text-muted small">↻${c.restart_count}</span>` : ""}</td>
+    <td class="small text-muted">${c.state === "running" ? fmtUptime(c.started_at) : "–"}</td>
+    <td class="small">${renderPorts(c)}</td>
+    <td class="small">${c.state === "running" ? (c.stats?.cpu_percent ?? "–") + "%" : "–"}</td>
+    <td class="small">${c.state === "running" ? fmtBytes(c.stats?.mem_usage) : "–"}</td>
+    <td class="text-end text-nowrap">${actionButtons(c)}</td></tr>`).join("") ||
+    `<tr><td colspan="9" class="text-center text-muted py-4">No containers found</td></tr>`;
+
+  $("#container-cards").innerHTML = list.map(c => `
+    <div class="col-12"><div class="container-card">
+      <div class="d-flex align-items-center gap-2">
+        <input class="form-check-input sel" type="checkbox" data-id="${c.id}" ${state.selected.has(c.id) ? "checked" : ""}>
+        <a href="#" class="text-decoration-none text-accent fw-semibold" data-details="${c.id}" data-name="${esc(c.name)}">${esc(c.name)}</a>
+        <span class="ms-auto">${badge(c.state)}</span></div>
+      <div class="small text-muted mt-1">${esc(c.image)} · ${esc(c.short_id)}</div>
+      <div class="mt-1">${renderPorts(c)}</div>
+      <div class="d-flex justify-content-between align-items-center mt-2">
+        <span class="small text-muted">${c.state === "running" ? `CPU ${c.stats?.cpu_percent ?? "–"}% · ${fmtBytes(c.stats?.mem_usage)}` : "offline"}</span>
+        <span class="text-nowrap">${actionButtons(c)}</span></div>
+    </div></div>`).join("");
+}
+
+function updateSelCount() {
+  $("#sel-count").textContent = state.selected.size;
+  $("#btn-backup-selected").disabled = !state.selected.size;
+}
+
+/* delegated events */
+document.addEventListener("click", async e => {
+  const t = e.target.closest("[data-act],[data-logs],[data-details],[data-remove]");
+  if (!t) return;
+  e.preventDefault();
+  if (t.dataset.act) {
+    const act = t.dataset.act, id = t.dataset.id;
+    const doIt = async () => {
+      try { await api(`/api/containers/${id}/${act}`, { method: "POST" });
+            toast(`Container ${act} OK`); setTimeout(loadContainers, 800); }
+      catch (err) { toast(`${act} failed: ${err.message}`, false); }
+    };
+    if (["stop", "restart", "kill"].includes(act))
+      confirmModal(`${act} container`, `Are you sure you want to <b>${act}</b> this container?`,
+                   act, doIt, act === "kill");
+    else doIt();
+  } else if (t.dataset.remove) {
+    const id = t.dataset.remove, name = t.dataset.name;
+    confirmModal("Remove container",
+      `<i class="bi bi-exclamation-triangle text-danger"></i>
+       Are you sure you want to remove container <b>${esc(name)}</b>?<br>
+       <div class="form-check mt-2"><input class="form-check-input" type="checkbox" id="rm-force">
+       <label class="form-check-label" for="rm-force">Force (kill if running)</label></div>
+       <div class="form-check"><input class="form-check-input" type="checkbox" id="rm-vol">
+       <label class="form-check-label" for="rm-vol">Also remove anonymous volumes</label></div>`,
+      "Remove", async () => {
+        try {
+          const f = $("#rm-force")?.checked, v = $("#rm-vol")?.checked;
+          await api(`/api/containers/${id}?force=${!!f}&volumes=${!!v}`, { method: "DELETE" });
+          toast(`Container ${name} removed`); loadContainers();
+        } catch (err) { toast(`Remove failed: ${err.message}`, false); }
+      });
+  } else if (t.dataset.logs) openLogs(t.dataset.logs, t.dataset.name);
+  else if (t.dataset.details) openDetails(t.dataset.details, t.dataset.name);
+});
+document.addEventListener("change", e => {
+  if (e.target.classList?.contains("sel")) {
+    e.target.checked ? state.selected.add(e.target.dataset.id)
+                     : state.selected.delete(e.target.dataset.id);
+    updateSelCount();
+  }
+});
+$("#sel-all").addEventListener("change", e => {
+  filtered().forEach(c => e.target.checked ? state.selected.add(c.id) : state.selected.delete(c.id));
+  renderContainers(); updateSelCount();
+});
+$("#search").addEventListener("input", e => { state.search = e.target.value.toLowerCase(); renderContainers(); });
+$("#filter-state").addEventListener("change", e => { state.filter = e.target.value; renderContainers(); });
+$("#sort-by").addEventListener("change", e => { state.sort = e.target.value; renderContainers(); });
+$("#btn-refresh").addEventListener("click", () => {
+  clearContainerSelection();   // explicit refresh resets stale selections
+  refreshPage();
+});
+$("#set-poll").addEventListener("change", e => {
+  state.pollInterval = Math.max(2, +e.target.value || 5) * 1000; restartPolling();
+});
+
+/* ---------------------------------------------------------------- details */
+async function openDetails(id, name) {
+  $("#details-name").textContent = name;
+  const body = $("#details-body");
+  body.innerHTML = '<div class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm"></div></div>';
+  bootstrap.Modal.getOrCreateInstance("#details-modal").show();
+  try {
+    const d = await api(`/api/containers/${id}`);
+    const kv = (k, v) => `<tr><td class="k text-muted" style="width:220px">${esc(k)}</td><td class="kv">${v}</td></tr>`;
+    const sec = (title, rows) => `<div class="details-section"><h6>${title}</h6>
+      <table class="table table-sm mb-0">${rows}</table></div>`;
+    const envMasked = d.env.map(e => kv(esc(e.key), esc(e.value)));
+    body.innerHTML =
+      sec("General",
+        kv("Name", esc(d.name)) + kv("ID", `<code>${esc(d.id.slice(0, 12))}</code>`) +
+        kv("Image", esc(d.image)) + kv("State", badge(d.state.Status || "")) +
+        kv("Status", esc(d.state.Status)) + kv("Created", fmtDate(d.created)) +
+        kv("Started", fmtDate(d.state.StartedAt)) + kv("Finished", fmtDate(d.state.FinishedAt))) +
+      sec("Configuration",
+        kv("Command", esc((d.cmd || []).join(" ") || "–")) +
+        kv("Entrypoint", esc((d.entrypoint || []).join(" ") || "–")) +
+        kv("Working dir", esc(d.working_dir || "–")) + kv("User", esc(d.user || "root")) +
+        kv("Restart policy", esc(`${d.restart_policy.Name || "no"} ${d.restart_policy.MaximumRetryCount ? `(max ${d.restart_policy.MaximumRetryCount})` : ""}`)) +
+        kv("Env (" + d.env.length + ")",
+           `<button class="btn btn-sm btn-outline-accent" id="reveal-env">show values</button>`) +
+        esc(Object.entries(d.labels).map(([k, v]) => `${k}=${v}`).join(" ") || "")) +
+      `<div class="details-section" id="env-section"><h6>Environment</h6>
+        <table class="table table-sm mb-0" id="env-table">${envMasked.join("") || '<tr><td class="text-muted">none</td></tr>'}</table></div>` +
+      sec("Network",
+        Object.entries(d.networks).map(([n, v]) =>
+          kv(n, esc(`${v.IPAddress || "–"}  ${v.MacAddress || ""}`))).join("") +
+        kv("Ports", Object.entries(d.ports).map(([p, b]) =>
+          esc(p + " → " + (b ? b.map(x => `${x.HostIp || ""}:${x.HostPort}`).join(", ") : "–"))).join("<br>") || "–")) +
+      sec("Mounts",
+        d.mounts.map(m => kv(esc(`${m.Type}: ${m.Name || m.Source}`),
+          esc(`${m.Destination} (${m.RW ? "rw" : "ro"})`))).join("") || '<tr><td class="text-muted">none</td></tr>');
+    $("#reveal-env").addEventListener("click", async () => {
+      if (!confirm("Reveal environment values? They may contain secrets.")) return;
+      const env = await api(`/api/containers/${id}/env`);
+      $("#env-table").innerHTML = env.map(e => kv(esc(e.key), esc(e.value))).join("");
+    });
+  } catch (e) { body.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`; }
+}
+
+/* ------------------------------------------------------------------- logs */
+function openLogs(id, name) {
+  state.logContainer = id;
+  $("#logs-name").textContent = name;
+  $("#logs-download").href = `/api/containers/${id}/logs/download?tail=${$("#logs-tail").value}`;
+  bootstrap.Modal.getOrCreateInstance("#logs-modal").show();
+  loadLogText();
+}
+async function loadLogText() {
+  stopStream();
+  const tail = $("#logs-tail").value;
+  const view = $("#logs-view");
+  view.textContent = "loading…";
+  try {
+    const txt = await (await fetch(`/api/containers/${state.logContainer}/logs?tail=${tail}`)).text();
+    renderLogs(txt);
+  } catch (e) { view.textContent = "Failed to load logs: " + e.message; }
+}
+function renderLogs(txt, append = false) {
+  const view = $("#logs-view");
+  const html = txt.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s?/g, '<span class="ts">$1</span> ');
+  if (append) view.innerHTML += html; else view.innerHTML = html;
+  if ($("#logs-autoscroll").checked) view.scrollTop = view.scrollHeight;
+}
+function liveStatus(mode) {
+  const el = $("#logs-live-status");
+  if (!mode) { el.className = "live-status d-none"; return; }
+  el.className = `live-status ${mode === "live" ? "on" : "off"}`;
+  el.innerHTML = `<i class="bi bi-circle-fill"></i> ${mode === "live" ? "Live" : "Disconnected"}`;
+}
+function stopStream(keepToggle = false) {
+  if (state.logSocket) {
+    const ws = state.logSocket; state.logSocket = null;
+    ws.onclose = null; ws.onerror = null;   // we closed it on purpose
+    try { ws.close(); } catch {}
+  }
+  if (!keepToggle) $("#logs-live").checked = false;
+  liveStatus(null);
+}
+function startStream() {
+  stopStream(true);
+  liveStatus(null);
+  const id = state.logContainer;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/api/containers/${id}/logs/stream?tail=0`);
+  state.logSocket = ws;
+  ws.onopen = () => liveStatus("live");
+  ws.onmessage = e => renderLogs(e.data, true);
+  ws.onerror = () => {};
+  ws.onclose = () => {
+    if (state.logSocket !== ws) return;          // superseded by a newer stream
+    state.logSocket = null;
+    $("#logs-live").checked = false;
+    liveStatus("off");
+  };
+}
+$("#logs-live").addEventListener("change", e => e.target.checked ? startStream() : stopStream());
+$("#logs-refresh").addEventListener("click", loadLogText);
+$("#logs-tail").addEventListener("change", () => {
+  $("#logs-download").href = `/api/containers/${state.logContainer}/logs/download?tail=${$("#logs-tail").value}`;
+  if (!$("#logs-live").checked) loadLogText();
+});
+$("#logs-modal").addEventListener("hidden.bs.modal", stopStream);
+
+/* ----------------------------------------------------------------- images */
+async function loadImages() {
+  try {
+    const imgs = await api("/api/images");
+    $("#images-tbody").innerHTML = imgs.map(i => `<tr>
+      <td class="fw-semibold">${esc(i.repo)}${i.dangling ? ' <span class="warn-chip">dangling</span>' : ""}</td>
+      <td>${esc(i.tag)}</td>
+      <td><code class="small">${esc(i.short_id)}</code></td>
+      <td class="small text-muted">${fmtDate(i.created)}</td>
+      <td class="small">${fmtBytes(i.size)}</td>
+      <td>${i.in_use ? '<span class="ok-chip">in use</span>' : "–"}</td>
+      <td class="text-end"><button class="btn btn-sm btn-outline-danger action-btn"
+          data-rmimgid="${esc(i.id)}" data-ref="${esc(i.repo + ":" + i.tag)}"
+          data-inuse="${i.in_use}" data-ntags="${i.tag_count}">
+        <i class="bi bi-trash"></i></button></td></tr>`).join("") ||
+      `<tr><td colspan="7" class="text-center text-muted py-4">No images</td></tr>`;
+    $$("[data-rmimgid]").forEach(b => b.addEventListener("click", () => {
+      const warn = b.dataset.inuse === "true"
+        ? `<div class="alert alert-warning py-2">A container depends on this image — force removal will be used.</div>`
+        : +b.dataset.ntags > 1
+          ? `<div class="alert alert-warning py-2">This image has ${b.dataset.ntags} tags; removing it by ID removes <b>all</b> of them.</div>` : "";
+      confirmModal("Remove image", `${warn}Remove image <b>${esc(b.dataset.ref)}</b> (<code>${esc(b.dataset.rmimgid.slice(0, 19))}…</code>)?`,
+        "Remove", async () => {
+          try { await api(`/api/images/${encodeURIComponent(b.dataset.rmimgid)}?force=${b.dataset.inuse === "true" || +b.dataset.ntags > 1}`, { method: "DELETE" });
+                toast("Image removed"); loadImages(); }
+          catch (e) { toast("Remove failed: " + e.message, false); }
+        });
+    }));
+  } catch (e) { toast("Images: " + e.message, false); }
+}
+$("#btn-pull").addEventListener("click", async () => {
+  const btn = $("#btn-pull");
+  const ref = $("#pull-ref").value.trim();
+  if (!ref || btn.disabled) return;
+  await withBusy(btn, () => withLoading(`Pulling ${ref}…`, async () => {
+    try { await api("/api/images/pull", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reference: ref }) });
+      toast(`Pulled ${ref}`); loadImages();
+    } catch (e) { toast("Pull failed: " + e.message, false); }
+  }));
+});
+
+/* ---------------------------------------------------------------- volumes */
+async function loadVolumes() {
+  try {
+    const vols = await api("/api/volumes");
+    $("#volumes-tbody").innerHTML = vols.map(v => `<tr>
+      <td class="fw-semibold">${esc(v.name)}</td><td>${esc(v.driver)}</td>
+      <td><code class="small">${esc(v.mountpoint)}</code></td>
+      <td class="small">${v.used_by.length ? esc(v.used_by.join(", ")) : '<span class="text-muted">unused</span>'}</td>
+      <td class="text-end"><button class="btn btn-sm btn-outline-danger action-btn" data-rmvol="${esc(v.name)}" ${v.used_by.length ? "disabled title='In use'" : ""}>
+        <i class="bi bi-trash"></i></button></td></tr>`).join("") ||
+      `<tr><td colspan="5" class="text-center text-muted py-4">No volumes</td></tr>`;
+    $$("[data-rmvol]").forEach(b => !b.disabled && b.addEventListener("click", () =>
+      confirmModal("Remove volume", `Remove volume <b>${esc(b.dataset.rmvol)}</b>? Data will be lost.`,
+        "Remove", async () => {
+          try { await api(`/api/volumes/${encodeURIComponent(b.dataset.rmvol)}`, { method: "DELETE" });
+                toast("Volume removed"); loadVolumes(); }
+          catch (e) { toast("Remove failed: " + e.message, false); }
+        })));
+  } catch (e) { toast("Volumes: " + e.message, false); }
+}
+
+/* ---------------------------------------------------------------- networks */
+async function loadNetworks() {
+  try {
+    const nets = await api("/api/networks");
+    $("#networks-tbody").innerHTML = nets.map(n => `<tr>
+      <td class="fw-semibold">${esc(n.name)}</td><td>${esc(n.driver)}</td>
+      <td class="small">${esc(n.subnet || "–")}</td><td class="small">${esc(n.gateway || "–")}</td>
+      <td class="small">${esc(n.containers.join(", ") || "–")}</td>
+      <td class="text-end">${["bridge","host","none"].includes(n.name) ? "" :
+        `<button class="btn btn-sm btn-outline-danger action-btn" data-rmnet="${esc(n.name)}"><i class="bi bi-trash"></i></button>`}</td></tr>`).join("");
+    $$("[data-rmnet]").forEach(b => b.addEventListener("click", () =>
+      confirmModal("Remove network", `Remove network <b>${esc(b.dataset.rmnet)}</b>?`,
+        "Remove", async () => {
+          try { await api(`/api/networks/${encodeURIComponent(b.dataset.rmnet)}`, { method: "DELETE" });
+                toast("Network removed"); loadNetworks(); }
+          catch (e) { toast("Remove failed: " + e.message, false); }
+        })));
+  } catch (e) { toast("Networks: " + e.message, false); }
+}
+
+/* ----------------------------------------------------------------- backup */
+$("#btn-backup-selected").addEventListener("click", () => {
+  const btn = $("#btn-backup-selected");
+  if (btn.disabled) return;                       // prevent duplicate starts
+  const names = state.containers.filter(c => state.selected.has(c.id)).map(c => c.name);
+  confirmModal("Create backup",
+    `Create a portable backup of <b>${names.length}</b> container(s)?<br>
+     <span class="text-muted small">${esc(names.join(", "))}</span>
+     <div class="form-check mt-2"><input class="form-check-input" type="checkbox" id="bk-vols" checked>
+     <label class="form-check-label" for="bk-vols">Include volume data</label></div>
+     <div class="text-warning small mt-2"><i class="bi bi-exclamation-triangle"></i>
+     Bind-mount host data is NOT included automatically.</div>`,
+    "Backup", async () => {
+      btn.disabled = true;
+      try {
+        const r = await withLoading("Creating backup…", () => api("/api/backups",
+          { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ container_ids: [...state.selected],
+                                   include_volumes: $("#bk-vols").checked }) }));
+        toast(`Backup created: ${r.filename}`);
+        clearContainerSelection();                // reset selection on success
+        loadBackups();
+      } catch (e) { toast("Backup failed: " + e.message, false); }
+      finally { updateSelCount(); }               // re-enable if selection remains
+    }, false);
+});
+
+async function loadBackups() {
+  try {
+    const bks = await api("/api/backups");
+    $("#backups-tbody").innerHTML = bks.map(b => `<tr>
+      <td class="small">${esc(b.filename)}</td><td class="small">${fmtBytes(b.size)}</td>
+      <td class="small text-muted">${fmtDate(b.created)}</td>
+      <td class="text-end text-nowrap">
+        <a class="btn btn-sm btn-outline-accent action-btn" href="/api/backups/${esc(b.filename)}/download"><i class="bi bi-download"></i></a>
+        <button class="btn btn-sm btn-outline-accent action-btn" data-bkrestore="${esc(b.filename)}"><i class="bi bi-arrow-counterclockwise"></i></button>
+        <button class="btn btn-sm btn-outline-danger action-btn" data-bkdel="${esc(b.filename)}"><i class="bi bi-trash"></i></button>
+      </td></tr>`).join("") ||
+      `<tr><td colspan="4" class="text-center text-muted py-4">No backups yet</td></tr>`;
+    $$("[data-bkdel]").forEach(b => b.addEventListener("click", () =>
+      confirmModal("Delete backup", `Delete <b>${esc(b.dataset.bkdel)}</b>?`, "Delete", async () => {
+        try { await api(`/api/backups/${b.dataset.bkdel}`, { method: "DELETE" });
+              toast("Backup deleted"); loadBackups(); }
+        catch (e) { toast(e.message, false); }
+      })));
+    $$("[data-bkrestore]").forEach(b => b.addEventListener("click", async () => {
+      if (b.disabled) return;                     // prevent duplicate summary requests
+      const filename = b.dataset.bkrestore;
+      // Immediately open the summary area with a loading state so the user
+      // sees the request was received even for large backups.
+      $("#restore-preview").innerHTML = `
+        <div class="details-section">
+          <h6>Restore Summary</h6>
+          <div class="text-center text-muted py-4">
+            <div class="spinner-border text-accent" role="status" aria-hidden="true"></div>
+            <div class="mt-2">Analyzing backup&hellip;</div>
+            <div class="small text-muted">Please wait, this can take a moment for large backups.</div>
+          </div>
+        </div>`;
+      $("#restore-preview").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      b.disabled = true;                          // re-enabled after load/failure
+      try {
+        const s = await withLoading("Loading restore summary…",
+          () => api(`/api/backups/${filename}/summary`));
+        renderRestorePreview(s, `/api/backups/${filename}/download`, filename);
+      } catch (e) {
+        $("#restore-preview").innerHTML = `
+          <div class="details-section">
+            <h6>Restore Summary</h6>
+            <div class="alert alert-danger mb-0"><i class="bi bi-exclamation-triangle"></i>
+              Failed to load restore summary: ${esc(e.message)}</div>
+          </div>`;
+        toast("Summary failed: " + e.message, false);
+      } finally { b.disabled = false; }
+    }));
+  } catch (e) { toast("Backups: " + e.message, false); }
+}
+
+/* ---------------------------------------------------------------- restore */
+$("#restore-file").addEventListener("change", e => {
+  state.restoreFile = e.target.files[0] || null;
+  $("#btn-preview-restore").disabled = !state.restoreFile;
+});
+$("#btn-preview-restore").addEventListener("click", async () => {
+  const btn = $("#btn-preview-restore");
+  if (!state.restoreFile || btn.disabled) return;
+  const fd = new FormData(); fd.append("file", state.restoreFile);
+  await withBusy(btn, () => withLoading("Inspecting backup…", async () => {
+    try {
+      const r = await fetch("/api/restore/preview", { method: "POST", body: fd });
+      if (!r.ok) throw new Error((await r.json()).detail);
+      renderRestorePreview(await r.json(), null, null, state.restoreFile);
+    } catch (e) { toast("Invalid backup: " + e.message, false); }
+  }));
+});
+
+function renderRestorePreview(s, downloadUrl, storedName, uploadFile) {
+  const el = $("#restore-preview");
+  const m = s.manifest;
+  el.innerHTML = `
+    <div class="details-section">
+      <h6>Backup summary</h6>
+      <div class="small text-muted mb-2">Created: ${fmtDate(m.created)} ·
+        ${m.volumes_included ? '<span class="ok-chip">volumes included</span>' : '<span class="warn-chip">volume data NOT included</span>'}
+        <span class="ok-chip">images: ${esc((m.images || []).join(", ") || "none")}</span></div>
+      ${(m.warnings || []).map(w => `<div class="alert alert-warning py-1 small"><i class="bi bi-exclamation-triangle"></i> ${esc(w)}</div>`).join("")}
+      ${s.containers.map((c, i) => `
+        <div class="border rounded p-2 mb-2" style="border-color: var(--dm-border)!important">
+          <b>${esc(c.name)}</b> <span class="text-muted small">(${esc(c.image)})</span>
+          ${c.image_in_backup ? '<span class="ok-chip">image in backup</span>' : c.image_local ? '<span class="ok-chip">image local</span>' : '<span class="warn-chip">image will be pulled</span>'}
+          ${c.volumes.length ? `<span class="ok-chip">volumes: ${esc(c.volumes.map(v => v.source).join(", "))}</span>` : ""}
+          ${c.bind_mounts.length ? `<span class="warn-chip">bind mounts NOT included: ${esc(c.bind_mounts.map(b => b.source).join(", "))}</span>` : ""}
+          ${c.ports.length ? `<div class="small text-muted">${esc(c.ports.map(p => `${p.host_port}→${p.container}`).join(", "))}</div>` : ""}
+          ${c.conflicts.map(x => `<div class="text-warning small"><i class="bi bi-exclamation-triangle"></i> ${esc(x)}</div>`).join("")}
+          ${c.conflicts.length ? `<div class="input-group input-group-sm mt-1" style="max-width:280px">
+            <span class="input-group-text">rename to</span>
+            <input class="form-control rename-in" data-orig="${esc(c.name)}" placeholder="${esc(c.name)}_restored"></div>` : ""}
+        </div>`).join("")}
+      <div class="form-check"><input class="form-check-input" type="checkbox" id="rs-start">
+        <label class="form-check-label small" for="rs-start">Start containers after restore</label></div>
+      <div class="form-check"><input class="form-check-input" type="checkbox" id="rs-vols" checked>
+        <label class="form-check-label small" for="rs-vols">Restore volume data</label></div>
+      <button class="btn btn-sm btn-accent mt-2" id="btn-do-restore"><i class="bi bi-arrow-counterclockwise"></i> Restore</button>
+    </div>`;
+  $("#btn-do-restore").addEventListener("click", async () => {
+    const btn = $("#btn-do-restore");
+    if (btn.disabled) return;                     // prevent duplicate restores
+    btn.disabled = true;
+    const renames = {};
+    $$(".rename-in").forEach(i => { if (i.value.trim()) renames[i.dataset.orig] = i.value.trim(); });
+    try {
+      await withLoading("Restoring backup…", async () => {
+        let fd = new FormData();
+        fd.append("renames", JSON.stringify(renames));
+        fd.append("start", $("#rs-start").checked);
+        fd.append("restore_volumes", $("#rs-vols").checked);
+        if (uploadFile) fd.append("file", uploadFile);
+        else { const blob = await (await fetch(downloadUrl)).blob(); fd.append("file", blob, storedName); }
+        const r = await fetch("/api/restore", { method: "POST", body: fd });
+        if (!r.ok) throw new Error((await r.json()).detail);
+        const results = await r.json();
+        results.forEach(x => x.ok ? toast(`Restored ${x.name}`) : toast(`Restore ${x.name} failed: ${x.error}`, false));
+        loadContainers();
+      });
+    } catch (e) { toast("Restore failed: " + e.message, false); }
+    finally { btn.disabled = false; }
+  });
+}
+
+/* --------------------------------------------------------------- polling */
+let pollTimer = null;
+function restartPolling() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(() => {
+    if (["dashboard", "containers"].includes(state.page)) loadContainers();
+  }, state.pollInterval);
+}
+
+loadSystem().then(() => $("#set-poll").value = Math.round(state.pollInterval / 1000));
+refreshPage();
+restartPolling();

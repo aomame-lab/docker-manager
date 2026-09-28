@@ -1,0 +1,15 @@
+services:
+  docker-manager:
+    build: .
+    container_name: docker-manager
+    ports:
+      - "8080:8080"
+    volumes:
+      # Grants root-equivalent control of the Docker host — see README.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./backups:/app/backups
+    environment:
+      - AUTH_TOKEN=${AUTH_TOKEN:-}
+      - POLL_INTERVAL=5
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
