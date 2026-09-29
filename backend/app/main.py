@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
@@ -44,7 +44,9 @@ app.include_router(backups.router)
 
 @app.get("/", include_in_schema=False)
 def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html = html.replace("{{APP_VERSION}}", settings.app_version)
+    return HTMLResponse(html)
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
