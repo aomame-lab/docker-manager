@@ -772,6 +772,114 @@ function renderRestorePreview(s, downloadUrl, storedName, uploadFile) {
   });
 }
 
+/* ------------------------------------------------------------------- logs */
+async function openDetails(id, name) {
+  $("#details-name").textContent = name;
+  const body = $("#details-body");
+  body.innerHTML = '<div class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm"></div></div>';
+  bootstrap.Modal.getOrCreateInstance("#details-modal").show();
+  try {
+    const d = await api(`/api/containers/${id}`);
+    const kv = (k, v) => `<tr><td class="k text-muted" style="width:220px">${esc(k)}</td><td class="kv">${v}</td></tr>`;
+    const sec = (title, rows) => `<div class="details-section"><h6>${title}</h6>
+      <table class="table table-sm mb-0">${rows}</table></div>`;
+    const envMasked = d.env.map(e => kv(esc(e.key), esc(e.value)));
+    body.innerHTML =
+      sec("General",
+        kv("Name", esc(d.name)) + kv("ID", `<code>${esc(d.id.slice(0, 12))}</code>`) +
+        kv("Image", esc(d.image)) + kv("State", badge(d.state.Status || "")) +
+        kv("Status", esc(d.state.Status)) + kv("Created", fmtDate(d.created)) +
+        kv("Started", fmtDate(d.state.StartedAt)) + kv("Finished", fmtDate(d.state.FinishedAt))) +
+      sec("Configuration",
+        kv("Command", esc((d.cmd || []).join(" ") || "–")) +
+        kv("Entrypoint", esc((d.entrypoint || []).join(" ") || "–")) +
+        kv("Working dir", esc(d.working_dir || "–")) + kv("User", esc(d.user || "root")) +
+        kv("Restart policy", esc(`${d.restart_policy.Name || "no"} ${d.restart_policy.MaximumRetryCount ? `(max ${d.restart_policy.MaximumRetryCount})` : ""}`)) +
+        kv("Env (" + d.env.length + ")",
+           `<button class="btn btn-sm btn-outline-accent" id="reveal-env">show values</button>`) +
+        esc(Object.entries(d.labels).map(([k, v]) => `${k}=${v}`).join(" ") || "")) +
+      `<div class="details-section" id="env-section"><h6>Environment</h6>
+        <table class="table table-sm mb-0" id="env-table">${envMasked.join("") || '<tr><td class="text-muted">none</td></tr>'}</table></div>` +
+      sec("Network",
+        Object.entries(d.networks).map(([n, v]) =>
+          kv(n, esc(`${v.IPAddress || "–"}  ${v.MacAddress || ""}`))).join("") +
+        kv("Ports", Object.entries(d.ports).map(([p, b]) =>
+          esc(p + " → " + (b ? b.map(x => `${x.HostIp || ""}:${x.HostPort}`).join(", ") : "–"))).join("<br>") || "–")) +
+      sec("Mounts",
+        d.mounts.map(m => kv(esc(`${m.Type}: ${m.Name || m.Source}`),
+          esc(`${m.Destination} (${m.RW ? "rw" : "ro"})`))).join("") || '<tr><td class="text-muted">none</td></tr>');
+    $("#reveal-env").addEventListener("click", async () => {
+      if (!confirm("Reveal environment values? They may contain secrets.")) return;
+      const env = await api(`/api/containers/${id}/env`);
+      $("#env-table").innerHTML = env.map(e => kv(esc(e.key), esc(e.value))).join("");
+    });
+  } catch (e) { body.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`; }
+}
+
+function openLogs(id, name) {
+  state.logContainer = id;
+  $("#logs-name").textContent = name;
+  $("#logs-download").href = `/api/containers/${id}/logs/download?tail=${$("#logs-tail").value}`;
+  bootstrap.Modal.getOrCreateInstance("#logs-modal").show();
+  loadLogText();
+}
+async function loadLogText() {
+  stopStream();
+  const tail = $("#logs-tail").value;
+  const view = $("#logs-view");
+  view.textContent = "loading…";
+  try {
+    const txt = await (await fetch(`/api/containers/${state.logContainer}/logs?tail=${tail}`)).text();
+    renderLogs(txt);
+  } catch (e) { view.textContent = "Failed to load logs: " + e.message; }
+}
+function renderLogs(txt, append = false) {
+  const view = $("#logs-view");
+  const html = txt.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s?/g, '<span class="ts">$1</span> ');
+  if (append) view.innerHTML += html; else view.innerHTML = html;
+  if ($("#logs-autoscroll").checked) view.scrollTop = view.scrollHeight;
+}
+function liveStatus(mode) {
+  const el = $("#logs-live-status");
+  if (!mode) { el.className = "live-status d-none"; return; }
+  el.className = `live-status ${mode === "live" ? "on" : "off"}`;
+  el.innerHTML = `<i class="bi bi-circle-fill"></i> ${mode === "live" ? "Live" : "Disconnected"}`;
+}
+function stopStream(keepToggle = false) {
+  if (state.logSocket) {
+    const ws = state.logSocket; state.logSocket = null;
+    ws.onclose = null; ws.onerror = null;
+    try { ws.close(); } catch {}
+  }
+  if (!keepToggle) $("#logs-live").checked = false;
+  liveStatus(null);
+}
+function startStream() {
+  stopStream(true);
+  liveStatus(null);
+  const id = state.logContainer;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/api/containers/${id}/logs/stream?tail=0`);
+  state.logSocket = ws;
+  ws.onopen = () => liveStatus("live");
+  ws.onmessage = e => renderLogs(e.data, true);
+  ws.onerror = () => {};
+  ws.onclose = () => {
+    if (state.logSocket !== ws) return;
+    state.logSocket = null;
+    $("#logs-live").checked = false;
+    liveStatus("off");
+  };
+}
+$("#logs-live").addEventListener("change", e => e.target.checked ? startStream() : stopStream());
+$("#logs-refresh").addEventListener("click", loadLogText);
+$("#logs-tail").addEventListener("change", () => {
+  $("#logs-download").href = `/api/containers/${state.logContainer}/logs/download?tail=${$("#logs-tail").value}`;
+  if (!$("#logs-live").checked) loadLogText();
+});
+$("#logs-modal").addEventListener("hidden.bs.modal", stopStream);
+
 /* delegated events */
 document.addEventListener("click", async e => {
   const t = e.target.closest("[data-act],[data-logs],[data-details],[data-remove]");
