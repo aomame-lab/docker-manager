@@ -34,8 +34,13 @@ const fmtUptime = (started) => {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
   return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m ${Math.floor(s % 60)}s`;
 };
-const esc = s => String(s ?? "").replace(/[&<>"']/g,
-  c => ({ "&": "&", "<": "<", ">": ">", '"': "\"", "'": "'" }[c]));
+/* Centralised HTML escaping. Every value interpolated into an innerHTML
+   template (text nodes and quoted attribute values alike) MUST go through
+   this. Docker-supplied metadata — container/image/volume/network names,
+   labels, env values, ports, filenames — is attacker-influenced whenever a
+   user can create containers, so it is never trusted as markup. */
+const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;" };
+const esc = s => String(s ?? "").replace(/[&<>"'`]/g, c => ESC_MAP[c]);
 
 /* ---------------------------------------------------------------- pagination helper */
 class Pagination {
@@ -120,14 +125,118 @@ const imagesPagination = new Pagination("images");
 const volumesPagination = new Pagination("volumes");
 const networksPagination = new Pagination("networks");
 
+/* ------------------------------------------------------------------- auth */
+/* The server-side AUTH_TOKEN is never transmitted to the browser: the backend
+   only reports auth_enabled (boolean). The operator types the token once into
+   the login modal; it is kept in localStorage and replayed as
+   `Authorization: Bearer <token>`. The log WebSocket cannot carry custom
+   headers from a browser, so it uses the `?token=` query parameter that
+   require_auth_ws already accepts.
+
+   When AUTH_TOKEN is unset no request ever returns 401, so none of this
+   activates and behaviour is byte-for-byte identical to the unauthenticated
+   baseline. Nothing here logs, embeds or otherwise exposes the token. */
+const TOKEN_KEY = "dm.auth.token";
+/* localStorage throws in some privacy modes, so fall back to a memory-only
+   token for the lifetime of the page rather than breaking the UI. */
+let tokenMemory = "";
+const getToken = () => {
+  try { return localStorage.getItem(TOKEN_KEY) || tokenMemory; } catch { return tokenMemory; }
+};
+const setToken = t => {
+  tokenMemory = t || "";
+  try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {}
+};
+/* Set once the backend has answered 401, i.e. auth is definitely required. */
+let authRequired = false;
+let loginOpen = false;
+
+/* Attach the bearer token to any request. Never logs the value. */
+function authHeaders(extra) {
+  const h = { ...(extra || {}) };
+  const t = getToken();
+  if (t) h["Authorization"] = `Bearer ${t}`;
+  return h;
+}
+
+/* Single entry point for API traffic: injects the token and surfaces the
+   login prompt on 401. Every raw fetch() call site must go through this. */
+async function authFetch(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: authHeaders(opts.headers) });
+  if (r.status === 401) {
+    authRequired = true;
+    promptLogin("Authentication required.");
+    throw new Error("Unauthorized");
+  }
+  return r;
+}
+
 async function api(path, opts = {}) {
-  const r = await fetch(path, opts);
+  const r = await authFetch(path, opts);
   if (!r.ok) {
     let msg = `${r.status}`;
     try { msg = (await r.json()).detail || msg; } catch {}
     throw new Error(msg);
   }
   return r.headers.get("content-type")?.includes("json") ? r.json() : r;
+}
+
+/* Latched so a burst of parallel 401s (a poll plus a page load) opens the
+   prompt once instead of stacking modals. Cleared by hidden.bs.modal, so a
+   later failure can prompt again. */
+function promptLogin(message) {
+  if (loginOpen) return;
+  loginOpen = true;
+  setLoginError(message || "");
+  const inp = $("#login-token");
+  if (inp) inp.value = "";
+  bootstrap.Modal.getOrCreateInstance("#login-modal").show();
+}
+
+/* Show the inline alert only when there is something to say. */
+function setLoginError(message) {
+  const err = $("#login-error");
+  if (!err) return;
+  err.textContent = message || "";
+  err.classList.toggle("d-none", !message);
+}
+
+function signOut() {
+  setToken("");
+  authRequired = false;
+  location.reload();
+}
+
+function wireLogin() {
+  $("#login-form").addEventListener("submit", async e => {
+    e.preventDefault();
+    const inp = $("#login-token");
+    const token = inp.value.trim();
+    if (!token) return;
+    const btn = $("#login-submit");
+    btn.disabled = true;
+    setLoginError("");
+    try {
+      setToken(token);
+      // Verify before dismissing, so a wrong token never looks like success.
+      await api("/api/system");
+      inp.value = "";
+      bootstrap.Modal.getOrCreateInstance("#login-modal").hide();
+      // Re-run the normal startup path now that requests will succeed.
+      state.containersInitialLoadComplete = false;
+      refreshPage();
+    } catch {
+      setToken("");
+      inp.value = "";
+      setLoginError("Invalid token. Please try again.");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  $("#login-modal").addEventListener("hidden.bs.modal", () => { loginOpen = false; });
+  $("#btn-logout").addEventListener("click", () => confirmModal(
+    "Sign out", "Forget the stored access token on this browser?", "Sign out",
+    signOut, false));
 }
 
 function toast(msg, ok = true) {
@@ -219,11 +328,13 @@ async function loadSystem() {
     }
     $("#app-version").textContent = `V.${d.settings.app_version || "—"}`;
     $("#set-poll").value = Math.round(state.pollInterval / 1000);
+    // Only offer sign-out once a token is actually stored in this browser.
+    if ($("#logout-wrap")) $("#logout-wrap").classList.toggle("d-none", !getToken());
     $("#settings-list").innerHTML = [
-      ["Application name", d.settings.app_name],
-      ["Backup directory", d.settings.backup_dir],
-      ["Max upload (MB)", d.settings.max_upload_mb],
-      ["Default log lines", d.settings.log_default_lines],
+      ["Application name", esc(d.settings.app_name)],
+      ["Backup directory", esc(d.settings.backup_dir)],
+      ["Max upload (MB)", esc(d.settings.max_upload_mb)],
+      ["Default log lines", esc(d.settings.log_default_lines)],
       ["Authentication", d.settings.auth_enabled
         ? '<span class="ok-chip">enabled</span>'
         : '<span class="warn-chip">disabled — restrict to trusted LAN</span>'],
@@ -232,24 +343,69 @@ async function loadSystem() {
 }
 
 /* ------------------------------------------------------------- containers */
+/* Transient container-fetch failures must not wipe a good render, and must not
+   re-toast on every 5s poll tick. Kept module-level so the documented `state`
+   object shape is unchanged. */
+let containerErrorActive = false;
+let lastContainerErrorToast = 0;
+const CONTAINER_ERROR_TOAST_MS = 30000;
+
+/* Announce a containers-fetch failure at most once per quiet period, and only
+   when entering the error state (reset on the next success). */
+function notifyContainerError(message) {
+  const now = Date.now();
+  if (containerErrorActive && now - lastContainerErrorToast < CONTAINER_ERROR_TOAST_MS) return;
+  containerErrorActive = true;
+  lastContainerErrorToast = now;
+  toast("Containers unavailable: " + message, false);
+}
+
 async function loadContainers() {
   const isInitialLoad = !state.containersInitialLoadComplete;
-  const showDashboardLoader = state.page === "dashboard" && isInitialLoad;
+  // Only show the Dashboard spinner when there is genuinely nothing on screen
+  // yet; otherwise a failed first load followed by a failed poll would replace
+  // existing rows with a spinner that the error branch then leaves behind.
+  const showDashboardLoader =
+    state.page === "dashboard" && isInitialLoad && !state.containers.length;
 
   if (showDashboardLoader) showDashboardLoading(true);
 
   try {
     state.containers = await api("/api/containers");
   } catch (e) {
-    if (showDashboardLoader) showDashboardLoading(false);
-    if ($("#container-tbody")) $("#container-tbody").innerHTML =
-      `<tr><td colspan="9" class="text-center text-danger py-4">${esc(e.message)}</td></tr>`;
+    const msg = e.message || "Request failed";
+    // Already-rendered data stays on screen; only an empty view is replaced.
+    const hasData = state.containers.length > 0;
+    if (state.page === "dashboard") {
+      if (!hasData) {
+        // Visible in the Dashboard itself — the old code wrote to the hidden
+        // Containers tbody, so a Dashboard failure was invisible and left the
+        // first-load spinner spinning forever.
+        $("#dashboard-list").innerHTML = `<div class="card dm-card"><div class="table-responsive">
+          <table class="table mb-0"><tbody><tr>
+            <td class="text-center text-danger py-4">
+              <i class="bi bi-exclamation-triangle"></i> ${esc(msg)}
+            </td></tr></tbody></table></div></div>`;
+        const ctl = $("#dashboard-pagination-controls");
+        if (ctl) ctl.classList.remove("d-none");   // spinner had hidden these
+      }
+      notifyContainerError(msg);
+      return;
+    }
+    if (!hasData && $("#container-tbody")) {
+      $("#container-tbody").innerHTML =
+        `<tr><td colspan="9" class="text-center text-danger py-4">${esc(msg)}</td></tr>`;
+    }
+    notifyContainerError(msg);
     return;
   }
+  containerErrorActive = false;
   // Drop selections pointing at containers that no longer exist (stale state).
   const ids = new Set(state.containers.map(c => c.id));
   for (const id of [...state.selected]) if (!ids.has(id)) state.selected.delete(id);
-  containersPagination.resetPage();
+  // NOTE: no resetPage() here. A poll refresh must keep the reader on the page
+  // they chose; the renderers clamp with adjustPage() when the result set
+  // shrinks, and every explicit control change still calls resetPage() itself.
   if (state.page === "dashboard") {
     if (showDashboardLoader) showDashboardLoading(false);
     renderSummary();
@@ -349,7 +505,7 @@ function renderPorts(c) {
 }
 
 function actionButtons(c) {
-  const id = c.id, n = esc(c.name);
+  const id = esc(c.id), n = esc(c.name);
   const btn = (act, icon, title, cls = "btn-outline-accent") =>
     `<button class="btn btn-sm ${cls} action-btn" data-act="${act}" data-id="${id}" title="${title}"><i class="bi bi-${icon}"></i></button>`;
   let html = "";
@@ -381,20 +537,22 @@ function renderSummary() {
   ];
   $("#summary-cards").innerHTML = cards.map(([l, v, i]) => `
     <div class="col-6 col-md-4 col-lg-2"><div class="dm-card stat-card">
-      <div class="value"><i class="bi bi-${i} text-accent"></i> ${v}</div>
-      <div class="label">${l}</div></div></div>`).join("");
+      <div class="value"><i class="bi bi-${esc(i)} text-accent"></i> ${esc(v)}</div>
+      <div class="label">${esc(l)}</div></div></div>`).join("");
 
-  // Dashboard containers overview — now paginated
+  // Dashboard containers overview — paginated. Clamp BEFORE slicing so a poll
+  // that shrinks the result set lands on the last valid page instead of
+  // rendering an empty page from an out-of-range index.
   const filtered = filteredContainers();
-  const paginated = containersPagination.getPaginatedList(filtered);
   containersPagination.adjustPage(containersPagination.getTotalPages(filtered));
+  const paginated = containersPagination.getPaginatedList(filtered);
   $("#dashboard-list").innerHTML = `<div class="card dm-card"><div class="table-responsive">
     <table class="table table-hover align-middle mb-0"><tbody>` +
     paginated.map(x => `<tr>
       <td><i class="bi bi-box-seam text-accent"></i> <b>${esc(x.name)}</b></td>
       <td class="text-muted">${esc(x.image)}</td><td>${badge(x.state)}</td>
-      <td class="text-muted">${x.stats?.cpu_percent ?? "–"}%</td>
-      <td class="text-muted">${fmtBytes(x.stats?.mem_usage)}</td>
+      <td class="text-muted">${esc(x.stats?.cpu_percent ?? "–")}%</td>
+      <td class="text-muted">${esc(fmtBytes(x.stats?.mem_usage))}</td>
     </tr>`).join("") + "</tbody></table></div></div>";
 
   renderDashboardPagination();
@@ -406,28 +564,28 @@ function renderContainers() {
   const list = containersPagination.getPaginatedList(filtered);
 
   $("#container-tbody").innerHTML = list.map(c => `<tr>
-    <td><input class="form-check-input sel" type="checkbox" data-id="${c.id}" ${state.selected.has(c.id) ? "checked" : ""}></td>
-    <td><a href="#" class="text-decoration-none text-accent fw-semibold" data-details="${c.id}" data-name="${esc(c.name)}">${esc(c.name)}</a>
+    <td><input class="form-check-input sel" type="checkbox" data-id="${esc(c.id)}" ${state.selected.has(c.id) ? "checked" : ""}></td>
+    <td><a href="#" class="text-decoration-none text-accent fw-semibold" data-details="${esc(c.id)}" data-name="${esc(c.name)}">${esc(c.name)}</a>
         <div class="text-muted small">${esc(c.short_id)}</div></td>
     <td class="text-muted small">${esc(c.image)}</td>
-    <td>${badge(c.state)}${c.restart_count ? ` <span class="text-muted small">↻${c.restart_count}</span>` : ""}</td>
-    <td class="small text-muted">${c.state === "running" ? fmtUptime(c.started_at) : "–"}</td>
+    <td>${badge(c.state)}${c.restart_count ? ` <span class="text-muted small">↻${esc(c.restart_count)}</span>` : ""}</td>
+    <td class="small text-muted">${c.state === "running" ? esc(fmtUptime(c.started_at)) : "–"}</td>
     <td class="small">${renderPorts(c)}</td>
-    <td class="small">${c.state === "running" ? (c.stats?.cpu_percent ?? "–") + "%" : "–"}</td>
-    <td class="small">${c.state === "running" ? fmtBytes(c.stats?.mem_usage) : "–"}</td>
+    <td class="small">${c.state === "running" ? esc(c.stats?.cpu_percent ?? "–") + "%" : "–"}</td>
+    <td class="small">${c.state === "running" ? esc(fmtBytes(c.stats?.mem_usage)) : "–"}</td>
     <td class="text-end text-nowrap">${actionButtons(c)}</td></tr>`).join("") ||
     `<tr><td colspan="9" class="text-center text-muted py-4">No containers found</td></tr>`;
 
   $("#container-cards").innerHTML = list.map(c => `
     <div class="col-12"><div class="container-card">
       <div class="d-flex align-items-center gap-2">
-        <input class="form-check-input sel" type="checkbox" data-id="${c.id}" ${state.selected.has(c.id) ? "checked" : ""}>
-        <a href="#" class="text-decoration-none text-accent fw-semibold" data-details="${c.id}" data-name="${esc(c.name)}">${esc(c.name)}</a>
+        <input class="form-check-input sel" type="checkbox" data-id="${esc(c.id)}" ${state.selected.has(c.id) ? "checked" : ""}>
+        <a href="#" class="text-decoration-none text-accent fw-semibold" data-details="${esc(c.id)}" data-name="${esc(c.name)}">${esc(c.name)}</a>
         <span class="ms-auto">${badge(c.state)}</span></div>
       <div class="small text-muted mt-1">${esc(c.image)} · ${esc(c.short_id)}</div>
       <div class="mt-1">${renderPorts(c)}</div>
       <div class="d-flex justify-content-between align-items-center mt-2">
-        <span class="small text-muted">${c.state === "running" ? `CPU ${c.stats?.cpu_percent ?? "–"}% · ${fmtBytes(c.stats?.mem_usage)}` : "offline"}</span>
+        <span class="small text-muted">${c.state === "running" ? `CPU ${esc(c.stats?.cpu_percent ?? "–")}% · ${esc(fmtBytes(c.stats?.mem_usage))}` : "offline"}</span>
         <span class="text-nowrap">${actionButtons(c)}</span></div>
     </div></div>`).join("");
 
@@ -498,12 +656,12 @@ function renderImages() {
     <td class="fw-semibold">${esc(i.repo)}${i.dangling ? ' <span class="warn-chip">dangling</span>' : ""}</td>
     <td>${esc(i.tag)}</td>
     <td><code class="small">${esc(i.short_id)}</code></td>
-    <td class="small text-muted">${fmtDate(i.created)}</td>
-    <td class="small">${fmtBytes(i.size)}</td>
+    <td class="small text-muted">${esc(fmtDate(i.created))}</td>
+    <td class="small">${esc(fmtBytes(i.size))}</td>
     <td>${i.in_use ? '<span class="ok-chip">in use</span>' : "–"}</td>
     <td class="text-end"><button class="btn btn-sm btn-outline-danger action-btn"
         data-rmimgid="${esc(i.id)}" data-ref="${esc(i.repo + ":" + i.tag)}"
-        data-inuse="${i.in_use}" data-ntags="${i.tag_count}">
+        data-inuse="${esc(i.in_use)}" data-ntags="${esc(i.tag_count)}">
       <i class="bi bi-trash"></i></button></td></tr>`).join("") ||
     `<tr><td colspan="7" class="text-center text-muted py-4">No images</td></tr>`;
 
@@ -654,17 +812,17 @@ async function loadBackups() {
   try {
     const bks = await api("/api/backups");
     $("#backups-tbody").innerHTML = bks.map(b => `<tr>
-      <td class="small">${esc(b.filename)}</td><td class="small">${fmtBytes(b.size)}</td>
-      <td class="small text-muted">${fmtDate(b.created)}</td>
+      <td class="small">${esc(b.filename)}</td><td class="small">${esc(fmtBytes(b.size))}</td>
+      <td class="small text-muted">${esc(fmtDate(b.created))}</td>
       <td class="text-end text-nowrap">
-        <a class="btn btn-sm btn-outline-accent action-btn" href="/api/backups/${esc(b.filename)}/download"><i class="bi bi-download"></i></a>
+        <a class="btn btn-sm btn-outline-accent action-btn" href="/api/backups/${encodeURIComponent(esc(b.filename))}/download"><i class="bi bi-download"></i></a>
         <button class="btn btn-sm btn-outline-accent action-btn" data-bkrestore="${esc(b.filename)}"><i class="bi bi-arrow-counterclockwise"></i></button>
         <button class="btn btn-sm btn-outline-danger action-btn" data-bkdel="${esc(b.filename)}"><i class="bi bi-trash"></i></button>
       </td></tr>`).join("") ||
       `<tr><td colspan="4" class="text-center text-muted py-4">No backups yet</td></tr>`;
     $$("[data-bkdel]").forEach(b => b.addEventListener("click", () =>
       confirmModal("Delete backup", `Delete <b>${esc(b.dataset.bkdel)}</b>?`, "Delete", async () => {
-        try { await api(`/api/backups/${b.dataset.bkdel}`, { method: "DELETE" });
+        try { await api(`/api/backups/${encodeURIComponent(b.dataset.bkdel)}`, { method: "DELETE" });
               toast("Backup deleted"); loadBackups(); }
         catch (e) { toast(e.message, false); }
       })));
@@ -686,8 +844,8 @@ async function loadBackups() {
       b.disabled = true;                          // re-enabled after load/failure
       try {
         const s = await withLoading("Loading restore summary…",
-          () => api(`/api/backups/${filename}/summary`));
-        renderRestorePreview(s, `/api/backups/${filename}/download`, filename);
+          () => api(`/api/backups/${encodeURIComponent(filename)}/summary`));
+        renderRestorePreview(s, `/api/backups/${encodeURIComponent(filename)}/download`, filename);
       } catch (e) {
         $("#restore-preview").innerHTML = `
           <div class="details-section">
@@ -712,7 +870,7 @@ $("#btn-preview-restore").addEventListener("click", async () => {
   const fd = new FormData(); fd.append("file", state.restoreFile);
   await withBusy(btn, () => withLoading("Inspecting backup…", async () => {
     try {
-      const r = await fetch("/api/restore/preview", { method: "POST", body: fd });
+      const r = await authFetch("/api/restore/preview", { method: "POST", body: fd });
       if (!r.ok) throw new Error((await r.json()).detail);
       renderRestorePreview(await r.json(), null, null, state.restoreFile);
     } catch (e) { toast("Invalid backup: " + e.message, false); }
@@ -725,7 +883,7 @@ function renderRestorePreview(s, downloadUrl, storedName, uploadFile) {
   el.innerHTML = `
     <div class="details-section">
       <h6>Backup summary</h6>
-      <div class="small text-muted mb-2">Created: ${fmtDate(m.created)} ·
+      <div class="small text-muted mb-2">Created: ${esc(fmtDate(m.created))} ·
         ${m.volumes_included ? '<span class="ok-chip">volumes included</span>' : '<span class="warn-chip">volume data NOT included</span>'}
         <span class="ok-chip">images: ${esc((m.images || []).join(", ") || "none")}</span></div>
       ${(m.warnings || []).map(w => `<div class="alert alert-warning py-1 small"><i class="bi bi-exclamation-triangle"></i> ${esc(w)}</div>`).join("")}
@@ -760,8 +918,8 @@ function renderRestorePreview(s, downloadUrl, storedName, uploadFile) {
         fd.append("start", $("#rs-start").checked);
         fd.append("restore_volumes", $("#rs-vols").checked);
         if (uploadFile) fd.append("file", uploadFile);
-        else { const blob = await (await fetch(downloadUrl)).blob(); fd.append("file", blob, storedName); }
-        const r = await fetch("/api/restore", { method: "POST", body: fd });
+        else { const blob = await (await authFetch(downloadUrl)).blob(); fd.append("file", blob, storedName); }
+        const r = await authFetch("/api/restore", { method: "POST", body: fd });
         if (!r.ok) throw new Error((await r.json()).detail);
         const results = await r.json();
         results.forEach(x => x.ok ? toast(`Restored ${x.name}`) : toast(`Restore ${x.name} failed: ${x.error}`, false));
@@ -781,15 +939,16 @@ async function openDetails(id, name) {
   try {
     const d = await api(`/api/containers/${id}`);
     const kv = (k, v) => `<tr><td class="k text-muted" style="width:220px">${esc(k)}</td><td class="kv">${v}</td></tr>`;
-    const sec = (title, rows) => `<div class="details-section"><h6>${title}</h6>
+    const sec = (title, rows) => `<div class="details-section"><h6>${esc(title)}</h6>
       <table class="table table-sm mb-0">${rows}</table></div>`;
-    const envMasked = d.env.map(e => kv(esc(e.key), esc(e.value)));
+    const labels = Object.entries(d.labels || {}).map(([k, v]) => `${k}=${v}`).join("  ");
+    const envMasked = d.env.map(e => kv(e.key, esc(e.value)));
     body.innerHTML =
       sec("General",
         kv("Name", esc(d.name)) + kv("ID", `<code>${esc(d.id.slice(0, 12))}</code>`) +
         kv("Image", esc(d.image)) + kv("State", badge(d.state.Status || "")) +
-        kv("Status", esc(d.state.Status)) + kv("Created", fmtDate(d.created)) +
-        kv("Started", fmtDate(d.state.StartedAt)) + kv("Finished", fmtDate(d.state.FinishedAt))) +
+        kv("Status", esc(d.state.Status)) + kv("Created", esc(fmtDate(d.created))) +
+        kv("Started", esc(fmtDate(d.state.StartedAt))) + kv("Finished", esc(fmtDate(d.state.FinishedAt)))) +
       sec("Configuration",
         kv("Command", esc((d.cmd || []).join(" ") || "–")) +
         kv("Entrypoint", esc((d.entrypoint || []).join(" ") || "–")) +
@@ -797,7 +956,7 @@ async function openDetails(id, name) {
         kv("Restart policy", esc(`${d.restart_policy.Name || "no"} ${d.restart_policy.MaximumRetryCount ? `(max ${d.restart_policy.MaximumRetryCount})` : ""}`)) +
         kv("Env (" + d.env.length + ")",
            `<button class="btn btn-sm btn-outline-accent" id="reveal-env">show values</button>`) +
-        esc(Object.entries(d.labels).map(([k, v]) => `${k}=${v}`).join(" ") || "")) +
+        kv("Labels", esc(labels || "none"))) +
       `<div class="details-section" id="env-section"><h6>Environment</h6>
         <table class="table table-sm mb-0" id="env-table">${envMasked.join("") || '<tr><td class="text-muted">none</td></tr>'}</table></div>` +
       sec("Network",
@@ -806,12 +965,12 @@ async function openDetails(id, name) {
         kv("Ports", Object.entries(d.ports).map(([p, b]) =>
           esc(p + " → " + (b ? b.map(x => `${x.HostIp || ""}:${x.HostPort}`).join(", ") : "–"))).join("<br>") || "–")) +
       sec("Mounts",
-        d.mounts.map(m => kv(esc(`${m.Type}: ${m.Name || m.Source}`),
+        d.mounts.map(m => kv(`${m.Type}: ${m.Name || m.Source}`,
           esc(`${m.Destination} (${m.RW ? "rw" : "ro"})`))).join("") || '<tr><td class="text-muted">none</td></tr>');
     $("#reveal-env").addEventListener("click", async () => {
       if (!confirm("Reveal environment values? They may contain secrets.")) return;
       const env = await api(`/api/containers/${id}/env`);
-      $("#env-table").innerHTML = env.map(e => kv(esc(e.key), esc(e.value))).join("");
+      $("#env-table").innerHTML = env.map(e => kv(e.key, esc(e.value))).join("");
     });
   } catch (e) { body.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`; }
 }
@@ -829,14 +988,15 @@ async function loadLogText() {
   const view = $("#logs-view");
   view.textContent = "loading…";
   try {
-    const txt = await (await fetch(`/api/containers/${state.logContainer}/logs?tail=${tail}`)).text();
+    const txt = await (await authFetch(`/api/containers/${encodeURIComponent(state.logContainer)}/logs?tail=${tail}`)).text();
     renderLogs(txt);
   } catch (e) { view.textContent = "Failed to load logs: " + e.message; }
 }
 function renderLogs(txt, append = false) {
   const view = $("#logs-view");
-  const html = txt.replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s?/g, '<span class="ts">$1</span> ');
+  // Escape the whole payload with the centralised helper first, then wrap the
+  // (already inert) timestamps in a span — so log output can never inject markup.
+  const html = esc(txt).replace(/(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s?/g, '<span class="ts">$1</span> ');
   if (append) view.innerHTML += html; else view.innerHTML = html;
   if ($("#logs-autoscroll").checked) view.scrollTop = view.scrollHeight;
 }
@@ -860,7 +1020,12 @@ function startStream() {
   liveStatus(null);
   const id = state.logContainer;
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/api/containers/${id}/logs/stream?tail=0`);
+  // A browser WebSocket cannot set an Authorization header, so require_auth_ws
+  // is satisfied via its documented ?token= query parameter (empty when auth
+  // is disabled, keeping the URL identical to the unauthenticated baseline).
+  const token = getToken();
+  const qs = `tail=0${token ? `&token=${encodeURIComponent(token)}` : ""}`;
+  const ws = new WebSocket(`${proto}://${location.host}/api/containers/${encodeURIComponent(id)}/logs/stream?${qs}`);
   state.logSocket = ws;
   ws.onopen = () => liveStatus("live");
   ws.onmessage = e => renderLogs(e.data, true);
@@ -1031,6 +1196,7 @@ function restartPolling() {
   }, state.pollInterval);
 }
 
+wireLogin();
 loadSystem().then(() => $("#set-poll").value = Math.round(state.pollInterval / 1000));
 refreshPage();
 restartPolling();

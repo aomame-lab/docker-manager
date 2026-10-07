@@ -289,11 +289,42 @@
           <label class="form-label">Polling interval (seconds)</label>
           <input type="number" class="form-control" id="set-poll" min="2" max="60" style="max-width:120px">
         </div>
+        <div class="mb-2 d-none" id="logout-wrap">
+          <button class="btn btn-sm btn-outline-danger" id="btn-logout">
+            <i class="bi bi-box-arrow-right"></i> Sign out
+          </button>
+          <span class="text-muted small ms-2">Access token is stored in this browser only.</span>
+        </div>
         <p class="text-muted small mb-0">Options like application name, backup directory or authentication
         are configured via environment variables (see <code>.env.example</code>) and require a restart.</p>
       </div>
     </div>
   </section>
+</div>
+
+<!-- Login modal: shown only when the backend answers 401 (AUTH_TOKEN set).
+     The server never sends the token to the browser; the operator enters it. -->
+<div class="modal fade" id="login-modal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+    <form id="login-form">
+      <div class="modal-header">
+        <h6 class="modal-title"><i class="bi bi-shield-lock text-accent"></i> Authentication required</h6>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small mb-2">
+          This Docker Manager instance requires an access token (<code>AUTH_TOKEN</code>).
+          Enter it to continue.
+        </p>
+        <label class="form-label" for="login-token">Access token</label>
+        <input type="password" class="form-control" id="login-token" autocomplete="current-password"
+               spellcheck="false" autofocus>
+        <div class="alert alert-danger py-1 px-2 small mt-2 mb-0 d-none" id="login-error" role="alert"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="submit" class="btn btn-sm btn-accent" id="login-submit">Sign in</button>
+      </div>
+    </form>
+  </div></div>
 </div>
 
 <!-- Generic confirm modal -->
