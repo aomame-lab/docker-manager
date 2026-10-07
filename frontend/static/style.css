@@ -132,6 +132,18 @@ body > .container-fluid { flex: 1 0 auto; width: 100%; }
 .app-status-indicator.st-error       { background: #64748b; }
 .app-card-image { margin-top: auto; font-size: .75rem; opacity: .7; word-break: break-all; }
 
+/* App card new elements (configurable tiles) */
+.app-card-title-row { display: flex; align-items: center; gap: .5rem; flex: 1; min-width: 0; }
+.app-card-icon { font-size: 1.1rem; flex-shrink: 0; }
+.app-card-link { color: var(--dm-accent); word-break: break-word; }
+.app-card-link:hover { text-decoration: underline; }
+.app-card-actions { display: flex; align-items: center; flex-shrink: 0; }
+.app-edit-btn { opacity: 0; transition: opacity .15s ease; }
+.app-card:hover .app-edit-btn,
+.app-edit-btn:focus { opacity: 1; }
+.app-card-status-row { margin-top: .5rem; }
+.app-card-description { margin-top: .5rem; font-style: italic; line-height: 1.3; word-break: break-word; }
+
 .kv { font-family: monospace; font-size: .8rem; }
 .kv .k { color: #7c90a8; }
 

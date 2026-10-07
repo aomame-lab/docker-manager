@@ -14,6 +14,8 @@ const state = {
   selected: new Set(), restoreFile: null, restoreBuffer: null,
   logSocket: null, logContainer: null, pendingConfirm: null,
   containersInitialLoadComplete: false,
+  // Frontend-only application tile configuration (not persisted)
+  appConfig: {},
 };
 
 const $ = s => document.querySelector(s);
@@ -238,6 +240,25 @@ function wireLogin() {
     "Sign out", "Forget the stored access token on this browser?", "Sign out",
     signOut, false));
 }
+
+/* Application config form handler */
+$("#app-config-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const id = $("#app-config-id").value;
+  if (!id) return;
+  const cfg = {
+    name: $("#app-config-name").value.trim(),
+    url: $("#app-config-url").value.trim(),
+    description: $("#app-config-description").value.trim(),
+    icon: $("#app-config-icon").value.trim(),
+  };
+  // Store in frontend memory only (not persisted)
+  state.appConfig[id] = cfg;
+  bootstrap.Modal.getOrCreateInstance("#app-config-modal").hide();
+  // Re-render dashboard if currently on it
+  if (state.page === "dashboard") renderSummary();
+  toast("Application tile configuration saved (in-browser only)", true);
+});
 
 function toast(msg, ok = true) {
   const el = document.createElement("div");
@@ -563,31 +584,64 @@ function renderSummary() {
   const filtered = filteredContainers();
   containersPagination.adjustPage(containersPagination.getTotalPages(filtered));
   const paginated = containersPagination.getPaginatedList(filtered);
-  $("#dashboard-apps").innerHTML = paginated.map(x => `
+  $("#dashboard-apps").innerHTML = paginated.map(x => {
+    const cfg = state.appConfig[x.id] || {};
+    const displayName = cfg.name || x.name;
+    const displayUrl = cfg.url || "";
+    const displayDesc = cfg.description || "";
+    const displayIcon = cfg.icon || "";
+    const nameHtml = displayUrl
+      ? `<a href="${esc(displayUrl)}" target="_blank" rel="noopener" class="app-card-link text-decoration-none" data-app-url="${esc(displayUrl)}">${esc(displayName)}</a>`
+      : `<span class="app-card-name">${esc(displayName)}</span>`;
+    const iconHtml = displayIcon ? `<i class="bi ${esc(displayIcon)} app-card-icon text-accent me-2"></i>` : "";
+    const descHtml = displayDesc ? `<div class="app-card-description text-muted small">${esc(displayDesc)}</div>` : "";
+    return `
     <div class="col-12 col-sm-6 col-lg-4 col-xl-3">
-      <div class="app-card" data-id="${esc(x.id)}" role="button" tabindex="0" aria-label="View ${esc(x.name)} details">
+      <div class="app-card" data-id="${esc(x.id)}" role="button" tabindex="0" aria-label="View ${esc(displayName)} details">
         <div class="app-card-header">
-          <div class="app-card-name">${esc(x.name)}</div>
+          <div class="app-card-title-row">
+            ${iconHtml}${nameHtml}
+          </div>
+          <div class="app-card-actions">
+            <button class="btn btn-sm btn-outline-secondary app-edit-btn" data-edit-id="${esc(x.id)}" title="Configure tile" aria-label="Configure ${esc(displayName)}">
+              <i class="bi bi-pencil-square"></i>
+            </button>
+          </div>
+        </div>
+        <div class="app-card-status-row">
           <div class="app-card-status">
             ${badge(x.state)}
             <span class="app-status-indicator st-${esc(x.state)}" aria-hidden="true"></span>
           </div>
         </div>
+        ${descHtml}
         <div class="app-card-image text-muted small">${esc(x.image)}</div>
       </div>
-    </div>
-  `).join("") || `<div class="col-12"><div class="text-center text-muted py-4">No applications found</div></div>`;
+    </div>`;
+  }).join("") || `<div class="col-12"><div class="text-center text-muted py-4">No applications found</div></div>`;
 
   renderDashboardPagination();
 
   // Attach click/keyboard handlers to application cards
   $$("#dashboard-apps .app-card").forEach(card => {
-    card.addEventListener("click", () => openDetails(card.dataset.id, card.dataset.id));
+    card.addEventListener("click", (e) => {
+      // Don't open details if clicking the edit button or a link
+      if (e.target.closest(".app-edit-btn") || e.target.closest(".app-card-link")) return;
+      openDetails(card.dataset.id, card.dataset.id);
+    });
     card.addEventListener("keydown", e => {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         openDetails(card.dataset.id, card.dataset.id);
       }
+    });
+  });
+
+  // Attach edit button handlers
+  $$("#dashboard-apps .app-edit-btn").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation(); // Prevent card click handler
+      openAppConfig(btn.dataset.editId);
     });
   });
 }
@@ -1046,6 +1100,17 @@ async function openDetails(id, name) {
       $("#env-table").innerHTML = env.map(e => kv(e.key, esc(e.value))).join("");
     });
   } catch (e) { body.innerHTML = `<div class="alert alert-danger">${esc(e.message)}</div>`; }
+}
+
+// Open application configuration modal
+function openAppConfig(id) {
+  const cfg = state.appConfig[id] || {};
+  $("#app-config-id").value = id;
+  $("#app-config-name").value = cfg.name || "";
+  $("#app-config-url").value = cfg.url || "";
+  $("#app-config-description").value = cfg.description || "";
+  $("#app-config-icon").value = cfg.icon || "";
+  bootstrap.Modal.getOrCreateInstance("#app-config-modal").show();
 }
 
 function openLogs(id, name) {
