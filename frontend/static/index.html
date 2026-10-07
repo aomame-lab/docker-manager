@@ -50,11 +50,11 @@
   <!-- ================================================== DASHBOARD -->
   <section id="page-dashboard" class="page">
     <div class="row g-3" id="summary-cards"></div>
-    <h6 class="mt-4 mb-2 text-muted">Containers overview</h6>
+    <h6 class="mt-4 mb-2 text-muted">Applications</h6>
     <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
       <div class="input-group search-box" style="max-width:300px">
         <span class="input-group-text"><i class="bi bi-search"></i></span>
-        <input class="form-control form-control-sm" id="dashboard-search" placeholder="Search containers…" aria-label="Search containers">
+        <input class="form-control form-control-sm" id="dashboard-search" placeholder="Search applications…" aria-label="Search applications">
       </div>
       <select class="form-select form-select-sm w-auto" id="dashboard-filter-state" aria-label="Filter by state">
         <option value="all">All</option><option value="running">Running</option>
@@ -67,8 +67,8 @@
         <option value="created">Created</option>
       </select>
       <div class="ms-auto d-flex gap-2 align-items-center">
-        <label class="form-label mb-0 small text-muted" for="dashboard-page-size" title="Containers per page">Show</label>
-        <select class="form-select form-select-sm w-auto" id="dashboard-page-size" aria-label="Containers per page">
+        <label class="form-label mb-0 small text-muted" for="dashboard-page-size" title="Applications per page">Show</label>
+        <select class="form-select form-select-sm w-auto" id="dashboard-page-size" aria-label="Applications per page">
           <option value="10" selected>10</option>
           <option value="25">25</option>
           <option value="50">50</option>
@@ -76,8 +76,8 @@
         </select>
       </div>
     </div>
-    <div id="dashboard-list"></div>
-    <nav class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-2" id="dashboard-pagination" aria-label="Dashboard containers pagination">
+    <div class="row g-3" id="dashboard-apps"></div>
+    <nav class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-2" id="dashboard-pagination" aria-label="Dashboard applications pagination">
       <div class="d-flex align-items-center gap-2 small text-muted" id="dashboard-pagination-info"></div>
       <div class="btn-group btn-group-sm" id="dashboard-pagination-controls" role="group" aria-label="Pagination">
         <button class="btn btn-outline-accent" id="btn-dashboard-page-prev" aria-label="Previous page"><i class="bi bi-chevron-left"></i></button>

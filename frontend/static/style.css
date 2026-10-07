@@ -98,6 +98,40 @@ body > .container-fluid { flex: 1 0 auto; width: 100%; }
   background: var(--dm-card); border: 1px solid var(--dm-border);
   border-radius: .7rem; padding: .8rem .9rem;
 }
+
+/* Dashboard application cards */
+.app-card {
+  background: var(--dm-card); border: 1px solid var(--dm-border);
+  border-radius: .75rem; padding: 1rem 1.1rem;
+  display: flex; flex-direction: column; min-height: 120px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.app-card:hover {
+  border-color: var(--dm-accent-dim);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .3);
+  cursor: pointer;
+}
+.app-card:focus { outline: none; }
+.app-card:focus-visible {
+  border-color: var(--dm-accent);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, .25);
+}
+.app-card-header { display: flex; justify-content: space-between; align-items: flex-start; }
+.app-card-name { font-weight: 600; font-size: .95rem; word-break: break-word; }
+.app-card-status { display: flex; align-items: center; gap: .5rem; flex-shrink: 0; }
+.app-status-indicator {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.app-status-indicator.st-running     { background: #34d399; box-shadow: 0 0 6px #34d399; }
+.app-status-indicator.st-restarting  { background: #fbbf24; box-shadow: 0 0 6px #fbbf24; }
+.app-status-indicator.st-paused      { background: #a78bfa; box-shadow: 0 0 6px #a78bfa; }
+.app-status-indicator.st-exited,
+.app-status-indicator.st-stopped,
+.app-status-indicator.st-created,
+.app-status-indicator.st-dead,
+.app-status-indicator.st-error       { background: #64748b; }
+.app-card-image { margin-top: auto; font-size: .75rem; opacity: .7; word-break: break-all; }
+
 .kv { font-family: monospace; font-size: .8rem; }
 .kv .k { color: #7c90a8; }
 

@@ -540,22 +540,39 @@ function renderSummary() {
       <div class="value"><i class="bi bi-${esc(i)} text-accent"></i> ${esc(v)}</div>
       <div class="label">${esc(l)}</div></div></div>`).join("");
 
-  // Dashboard containers overview — paginated. Clamp BEFORE slicing so a poll
+  // Dashboard applications — paginated card grid. Clamp BEFORE slicing so a poll
   // that shrinks the result set lands on the last valid page instead of
   // rendering an empty page from an out-of-range index.
   const filtered = filteredContainers();
   containersPagination.adjustPage(containersPagination.getTotalPages(filtered));
   const paginated = containersPagination.getPaginatedList(filtered);
-  $("#dashboard-list").innerHTML = `<div class="card dm-card"><div class="table-responsive">
-    <table class="table table-hover align-middle mb-0"><tbody>` +
-    paginated.map(x => `<tr>
-      <td><i class="bi bi-box-seam text-accent"></i> <b>${esc(x.name)}</b></td>
-      <td class="text-muted">${esc(x.image)}</td><td>${badge(x.state)}</td>
-      <td class="text-muted">${esc(x.stats?.cpu_percent ?? "–")}%</td>
-      <td class="text-muted">${esc(fmtBytes(x.stats?.mem_usage))}</td>
-    </tr>`).join("") + "</tbody></table></div></div>";
+  $("#dashboard-apps").innerHTML = paginated.map(x => `
+    <div class="col-12 col-sm-6 col-lg-4 col-xl-3">
+      <div class="app-card" data-id="${esc(x.id)}" role="button" tabindex="0" aria-label="View ${esc(x.name)} details">
+        <div class="app-card-header">
+          <div class="app-card-name">${esc(x.name)}</div>
+          <div class="app-card-status">
+            ${badge(x.state)}
+            <span class="app-status-indicator st-${esc(x.state)}" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div class="app-card-image text-muted small">${esc(x.image)}</div>
+      </div>
+    </div>
+  `).join("") || `<div class="col-12"><div class="text-center text-muted py-4">No applications found</div></div>`;
 
   renderDashboardPagination();
+
+  // Attach click/keyboard handlers to application cards
+  $$("#dashboard-apps .app-card").forEach(card => {
+    card.addEventListener("click", () => openDetails(card.dataset.id, card.dataset.id));
+    card.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openDetails(card.dataset.id, card.dataset.id);
+      }
+    });
+  });
 }
 
 function renderContainers() {
@@ -602,18 +619,18 @@ function renderContainersPagination() {
 }
 
 function showDashboardLoading(show) {
-  const listEl = $("#dashboard-list");
+  const listEl = $("#dashboard-apps");
   if (!listEl) return;
   if (show) {
-    listEl.innerHTML = `<div class="card dm-card"><div class="table-responsive">
+    listEl.innerHTML = `<div class="col-12"><div class="card dm-card"><div class="table-responsive">
       <table class="table table-hover align-middle mb-0"><tbody>
         <tr><td colspan="5" class="text-center py-4">
           <div class="d-flex flex-column align-items-center gap-2">
             <div class="spinner-border text-accent" role="status" aria-hidden="true"></div>
-            <span class="text-muted small">Loading containers…</span>
+            <span class="text-muted small">Loading applications…</span>
           </div>
         </td></tr>
-      </tbody></table></div></div>`;
+      </tbody></table></div></div></div>`;
     // Hide pagination while loading
     const controls = $("#dashboard-pagination-controls");
     if (controls) controls.classList.add("d-none");
