@@ -340,6 +340,23 @@ async function loadSystem() {
         : '<span class="warn-chip">disabled — restrict to trusted LAN</span>'],
     ].map(([k, v]) => `<dt class="col-sm-4 text-muted">${k}</dt><dd class="col-sm-8">${v}</dd>`).join("");
   } catch (e) { /* backend down */ }
+
+  // Load resource counts for System Resources section (Dashboard only)
+  if (state.page === "dashboard") {
+    try {
+      const [imgs, vols, nets] = await Promise.all([
+        api("/api/images"),
+        api("/api/volumes"),
+        api("/api/networks"),
+      ]);
+      state.dashboardResources = {
+        images: imgs.length,
+        volumes: vols.length,
+        networks: nets.length,
+      };
+      renderSystemResources();
+    } catch (e) { /* ignore */ }
+  }
 }
 
 /* ------------------------------------------------------------- containers */
@@ -635,6 +652,45 @@ function showDashboardLoading(show) {
     const controls = $("#dashboard-pagination-controls");
     if (controls) controls.classList.add("d-none");
   }
+}
+
+function renderSystemResources() {
+  const res = state.dashboardResources || { images: 0, volumes: 0, networks: 0 };
+  const c = state.containers;
+  const running = c.filter(x => x.state === "running");
+  const cpu = running.reduce((s, x) => s + (x.stats?.cpu_percent || 0), 0);
+  const mem = running.reduce((s, x) => s + (x.stats?.mem_usage || 0), 0);
+  const cpuPct = Math.min(100, Math.round(cpu)); // clamp for progress bar
+
+  // Compute memory percentage if we have host memory info (not available, use container sum)
+  // For now show container memory usage as absolute value
+
+  $("#system-resources").innerHTML = `
+    <div class="col-12 col-md-6 col-lg-3"><div class="dm-card sys-card">
+      <div class="sys-card-label"><i class="bi bi-motherboard text-accent"></i> Docker Engine</div>
+      <div class="sys-card-value">${esc(state.settings?.app_name || "Docker Manager")}</div>
+      <div class="sys-card-subtext text-muted small">
+        v${esc(state.settings?.app_version || "—")} · ${esc(state.settings?.poll_interval || 5)}s poll
+      </div>
+    </div></div>
+    <div class="col-12 col-md-6 col-lg-3"><div class="dm-card sys-card">
+      <div class="sys-card-label"><i class="bi bi-cpu text-accent"></i> CPU (containers)</div>
+      <div class="sys-card-value">${esc(cpu.toFixed(1))}%</div>
+      <div class="progress mt-2" style="height: 6px;">
+        <div class="progress-bar bg-accent" role="progressbar" style="width: ${cpuPct}%" aria-valuenow="${cpuPct}" aria-valuemin="0" aria-valuemax="100"></div>
+      </div>
+    </div></div>
+    <div class="col-12 col-md-6 col-lg-3"><div class="dm-card sys-card">
+      <div class="sys-card-label"><i class="bi bi-memory text-accent"></i> Memory (containers)</div>
+      <div class="sys-card-value">${esc(fmtBytes(mem))}</div>
+      <div class="sys-card-subtext text-muted small">${running.length} running container${running.length !== 1 ? "s" : ""}</div>
+    </div></div>
+    <div class="col-12 col-md-6 col-lg-3"><div class="dm-card sys-card">
+      <div class="sys-card-label"><i class="bi bi-hdd-stack text-accent"></i> Resources</div>
+      <div class="sys-card-value">${res.images} images · ${res.volumes} vols · ${res.networks} nets</div>
+      <div class="sys-card-subtext text-muted small">${c.length} total containers</div>
+    </div></div>
+  `;
 }
 
 function renderDashboardPagination() {

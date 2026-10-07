@@ -190,3 +190,12 @@ a.port-chip:hover { background: var(--dm-accent-dim); color: #fff; }
   --bs-progress-height: 3px; --bs-progress-bg: transparent;
   --bs-progress-bar-bg: var(--dm-accent); border-radius: 0; margin-top: 3px;
 }
+
+/* System Resources cards (Dashboard) */
+.sys-card {
+  padding: 1rem 1.25rem;
+  text-align: center;
+}
+.sys-card-label { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: #7c90a8; margin-bottom: .5rem; }
+.sys-card-value { font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+.sys-card-subtext { font-size: .72rem; margin-top: .5rem; }
