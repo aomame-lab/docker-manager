@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .docker_service import get_service
-from .routers import backups, containers, resources
+from .routers import backups, containers, dashboard, resources
 
 logging.basicConfig(
     level=settings.log_level,
@@ -40,6 +40,7 @@ app.include_router(containers.router)
 app.include_router(containers.ws_router)
 app.include_router(resources.router)
 app.include_router(backups.router)
+app.include_router(dashboard.router)
 
 
 @app.get("/", include_in_schema=False)

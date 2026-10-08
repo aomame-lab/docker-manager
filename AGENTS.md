@@ -183,11 +183,13 @@ backend/app/
 ├── auth.py                require_auth (HTTP) / require_auth_ws (WebSocket)
 ├── backup.py              portable backup create / list / validate / summarize
 ├── restore.py             restore execution from a validated archive
+├── dashboard_store.py     dashboard application config persistence (JSON file)
 └── routers/
     ├── __init__.py        (empty)
     ├── containers.py      container CRUD-ish ops, logs, log stream WS, stats
     ├── resources.py       /api/system, images, volumes, networks
-    └── backups.py         backup create/list/download/delete, restore preview/run
+    ├── backups.py         backup create/list/download/delete, restore preview/run
+    └── dashboard.py       dashboard application config CRUD API
 ```
 
 Dependency direction is strictly inward: `routers → deps → docker_service → config`.
@@ -223,6 +225,13 @@ call `svc.client` directly.
 | GET | `/api/backups/{filename}/download` | yes | Download tarball |
 | DELETE | `/api/backups/{filename}` | yes | Delete tarball |
 | GET | `/api/backups/{filename}/summary` | yes | Restore summary for stored backup |
+| POST | `/api/restore/preview` | yes | Upload + summarize |
+| POST | `/api/restore` | yes | Upload + restore (`renames`, `start`, `restore_volumes`) |
+| GET | `/api/dashboard/apps` | yes | List persisted dashboard app configs |
+| POST | `/api/dashboard/apps` | yes | Create dashboard app config, `201` |
+| GET | `/api/dashboard/apps/{app_id}` | yes | Get single dashboard app config |
+| PUT | `/api/dashboard/apps/{app_id}` | yes | Update dashboard app config |
+| DELETE | `/api/dashboard/apps/{app_id}` | yes | Delete dashboard app config |
 | POST | `/api/restore/preview` | yes | Upload + summarize |
 | POST | `/api/restore` | yes | Upload + restore (`renames`, `start`, `restore_volumes`) |
 
@@ -512,6 +521,12 @@ Status is verified against the code cited, not against `README.md` claims.
 | 48 | About / System information | **Implemented** | `#page-about`; app name, backup dir, max upload, default log lines, auth status; polling interval editable 2–60s |
 | 49 | Footer version + live engine info | **Implemented** | `V.{app_version}`, `Docker {version} · API {api} · {os}` — only refreshed on `loadSystem()` |
 | 50 | Engine connection badge | **Implemented** | `#engine-status` ok/err |
+| 51 | Dashboard application cards | **Implemented** | `#page-dashboard`; `renderSummary()` `app.js:588-660`; cards with name, status, icon, image |
+| 52 | Dashboard application configuration | **Implemented** | Edit modal (`#app-config-modal`), persist to `BACKUP_DIR/dashboard-apps.json`; fields: name, URL, description, icon, group, order |
+| 53 | Dashboard application persistence | **Implemented** | Server-side JSON (`BACKUP_DIR/dashboard-apps.json`); survives browser refresh & restart; atomic writes; `model_dump(mode="json")` for HttpUrl serialization |
+| 54 | Dashboard application API | **Implemented** | `GET/POST/PUT/DELETE /api/dashboard/apps`; authenticated; `appId` = container name (stable) |
+| 55 | Footer version + live engine info | **Implemented** | `V.{app_version}`, `Docker {version} · API {api} · {os}` — only refreshed on `loadSystem()` |
+| 56 | Engine connection badge | **Implemented** | `#engine-status` ok/err |
 | 51 | Frontend asset cache busting | **Implemented** | `?v={{APP_VERSION}}` on `app.js` + `style.css`; `index.html` read per request |
 | 52 | Responsive layout | **Implemented** | Bootstrap grid + `.d-md-none` / `.d-none d-md-block` swap |
 | 53 | Dark/cyan theme | **Implemented** | CSS custom properties in `style.css:1-8` |
@@ -763,6 +778,12 @@ form field; the restore router rejects a non-dict payload with 400.
   non-tar input, empty containers, invalid name, missing image, future version,
   and the path-traversal defences (`_safe_member`, `safe_extract` blocked and
   allowed cases).
+- `tests/test_dashboard.py` (17 tests): dashboard store path resolution, appId
+  validation, missing file returns empty list, POST creates application, duplicate
+  POST rejected, GET returns saved application, PUT updates application, PUT
+  preserves createdAt, PUT unknown ID rejected, DELETE removes application, DELETE
+  non-existent raises, malformed input rejected, persistence survives store reload,
+  atomic write leaves valid JSON, list_apps returns all.
 
 Gaps in coverage (all current, none are failures):
 
@@ -1116,6 +1137,8 @@ None of the above may be resolved by guessing. Ask first.
 | `backend/app/auth.py` | 27 | Bearer token (HTTP + WS) |
 | `backend/app/backup.py` | 277 | Backup create / list / validate / summarize |
 | `backend/app/restore.py` | 140 | Restore execution |
+| `backend/app/dashboard_store.py` | 166 | Dashboard application config persistence (JSON file) |
+| `backend/app/routers/dashboard.py` | 107 | Dashboard application config REST API |
 | `backend/app/routers/containers.py` | 149 | Container routes + log stream WS |
 | `backend/app/routers/resources.py` | 87 | `/api/system`, images, volumes, networks |
 | `backend/app/routers/backups.py` | 112 | Backups + restore preview/run |
@@ -1125,6 +1148,7 @@ None of the above may be resolved by guessing. Ask first.
 | `tests/conftest.py` | 67 | Mock Docker fixtures |
 | `tests/test_api.py` | 62 | 11 API tests |
 | `tests/test_backup.py` | 102 | 10 backup validation tests |
+| `tests/test_dashboard.py` | 135 | 17 dashboard app config tests |
 | `README.md` | 298 | User-facing docs, roadmap |
 | `Dockerfile` | 23 | Runtime image |
 | `docker-compose.yml` | 15 | Deployment |

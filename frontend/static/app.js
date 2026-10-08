@@ -177,7 +177,16 @@ async function api(path, opts = {}) {
   const r = await authFetch(path, opts);
   if (!r.ok) {
     let msg = `${r.status}`;
-    try { msg = (await r.json()).detail || msg; } catch {}
+    try {
+      const data = await r.json();
+      if (Array.isArray(data.detail)) {
+        msg = data.detail
+          .map(d => d.msg || d.type || "validation error")
+          .join(", ");
+      } else {
+        msg = data.detail || msg;
+      }
+    } catch {}
     throw new Error(msg);
   }
   return r.headers.get("content-type")?.includes("json") ? r.json() : r;
@@ -246,18 +255,44 @@ $("#app-config-form").addEventListener("submit", async e => {
   e.preventDefault();
   const id = $("#app-config-id").value;
   if (!id) return;
-  const cfg = {
-    name: $("#app-config-name").value.trim(),
-    url: $("#app-config-url").value.trim(),
-    description: $("#app-config-description").value.trim(),
-    icon: $("#app-config-icon").value.trim(),
+  const isNew = !state.appConfig[id];
+  const payload = {
+    appId: id,
+    containerName: id,
+    displayName: $("#app-config-name").value.trim(),
+    url: $("#app-config-url").value.trim() || undefined,
+    description: $("#app-config-description").value.trim() || undefined,
+    icon: $("#app-config-icon").value.trim() || undefined,
+    group: $("#app-config-group").value.trim() || undefined,
+    order: parseInt($("#app-config-order").value || "0", 10) || 0,
   };
-  // Store in frontend memory only (not persisted)
-  state.appConfig[id] = cfg;
-  bootstrap.Modal.getOrCreateInstance("#app-config-modal").hide();
-  // Re-render dashboard if currently on it
-  if (state.page === "dashboard") renderSummary();
-  toast("Application tile configuration saved (in-browser only)", true);
+  // Preserve containerName and imageDigest if editing existing
+  const existing = state.appConfig[id] || {};
+  if (existing.containerName) payload.containerName = existing.containerName;
+  if (existing.imageDigest) payload.imageDigest = existing.imageDigest;
+
+  const btn = $("#app-config-form button[type=submit]");
+  btn.disabled = true;
+  try {
+    const headers = {
+      "Content-Type": "application/json",
+      ...authHeaders()
+    };
+    if (isNew) {
+      await api("/api/dashboard/apps", { method: "POST", headers, body: JSON.stringify(payload) });
+    } else {
+      await api(`/api/dashboard/apps/${encodeURIComponent(id)}`, { method: "PUT", headers, body: JSON.stringify(payload) });
+    }
+    // Reload config from server to ensure consistency
+    await loadAppConfig();
+    bootstrap.Modal.getOrCreateInstance("#app-config-modal").hide();
+    if (state.page === "dashboard") renderSummary();
+    toast("Application tile configuration saved", true);
+  } catch (e) {
+    toast("Save failed: " + e.message, false);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 function toast(msg, ok = true) {
@@ -362,6 +397,11 @@ async function loadSystem() {
     ].map(([k, v]) => `<dt class="col-sm-4 text-muted">${k}</dt><dd class="col-sm-8">${v}</dd>`).join("");
   } catch (e) { /* backend down */ }
 
+  // Load persisted application configurations (Dashboard only)
+  if (state.page === "dashboard") {
+    await loadAppConfig();
+  }
+
   // Load resource counts for System Resources section (Dashboard only)
   if (state.page === "dashboard") {
     try {
@@ -377,6 +417,29 @@ async function loadSystem() {
       };
       renderSystemResources();
     } catch (e) { /* ignore */ }
+  }
+}
+
+/* Load persisted application configurations from the API. */
+async function loadAppConfig() {
+  try {
+    const apps = await api("/api/dashboard/apps");
+    state.appConfig = {};
+    for (const app of apps) {
+      state.appConfig[app.appId] = {
+        name: app.displayName,
+        url: app.url || "",
+        description: app.description || "",
+        icon: app.icon || "",
+        group: app.group || "",
+        order: app.order || 0,
+        containerName: app.containerName,
+        imageDigest: app.imageDigest,
+      };
+    }
+  } catch (e) {
+    // Fallback gracefully — the Dashboard will still work with generated cards
+    console.warn("Failed to load dashboard app config:", e);
   }
 }
 
@@ -585,7 +648,8 @@ function renderSummary() {
   containersPagination.adjustPage(containersPagination.getTotalPages(filtered));
   const paginated = containersPagination.getPaginatedList(filtered);
   $("#dashboard-apps").innerHTML = paginated.map(x => {
-    const cfg = state.appConfig[x.id] || {};
+    // Use container name (stable) as the key for persisted config
+    const cfg = state.appConfig[x.name] || {};
     const displayName = cfg.name || x.name;
     const displayUrl = cfg.url || "";
     const displayDesc = cfg.description || "";
@@ -597,13 +661,13 @@ function renderSummary() {
     const descHtml = displayDesc ? `<div class="app-card-description text-muted small">${esc(displayDesc)}</div>` : "";
     return `
     <div class="col-12 col-sm-6 col-lg-4 col-xl-3">
-      <div class="app-card" data-id="${esc(x.id)}" role="button" tabindex="0" aria-label="View ${esc(displayName)} details">
+      <div class="app-card" data-id="${esc(x.id)}" data-name="${esc(x.name)}" role="button" tabindex="0" aria-label="View ${esc(displayName)} details">
         <div class="app-card-header">
           <div class="app-card-title-row">
             ${iconHtml}${nameHtml}
           </div>
           <div class="app-card-actions">
-            <button class="btn btn-sm btn-outline-secondary app-edit-btn" data-edit-id="${esc(x.id)}" title="Configure tile" aria-label="Configure ${esc(displayName)}">
+            <button class="btn btn-sm btn-outline-secondary app-edit-btn" data-edit-name="${esc(x.name)}" title="Configure tile" aria-label="Configure ${esc(displayName)}">
               <i class="bi bi-pencil-square"></i>
             </button>
           </div>
@@ -641,7 +705,7 @@ function renderSummary() {
   $$("#dashboard-apps .app-edit-btn").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation(); // Prevent card click handler
-      openAppConfig(btn.dataset.editId);
+      openAppConfig(btn.dataset.editName);
     });
   });
 }
@@ -1110,6 +1174,8 @@ function openAppConfig(id) {
   $("#app-config-url").value = cfg.url || "";
   $("#app-config-description").value = cfg.description || "";
   $("#app-config-icon").value = cfg.icon || "";
+  $("#app-config-group").value = cfg.group || "";
+  $("#app-config-order").value = cfg.order || 0;
   bootstrap.Modal.getOrCreateInstance("#app-config-modal").show();
 }
 
