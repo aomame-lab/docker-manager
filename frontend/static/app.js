@@ -641,55 +641,128 @@ function renderSummary() {
       <div class="value"><i class="bi bi-${esc(i)} text-accent"></i> ${esc(v)}</div>
       <div class="label">${esc(l)}</div></div></div>`).join("");
 
-  // Dashboard applications — paginated card grid. Clamp BEFORE slicing so a poll
-  // that shrinks the result set lands on the last valid page instead of
-  // rendering an empty page from an out-of-range index.
+  // Dashboard applications — grouped and paginated card grid.
+  // Clamp BEFORE slicing so a poll that shrinks the result set lands on the last valid page.
   const filtered = filteredContainers();
-  containersPagination.adjustPage(containersPagination.getTotalPages(filtered));
-  const paginated = containersPagination.getPaginatedList(filtered);
-  $("#dashboard-apps").innerHTML = paginated.map(x => {
-    // Use container name (stable) as the key for persisted config
+
+  // Group applications by their group property, then sort groups and items.
+  // Build a flat list in group order for pagination, then re-group for rendering.
+  const appsByGroup = new Map();
+  for (const x of filtered) {
     const cfg = state.appConfig[x.name] || {};
-    const displayName = cfg.name || x.name;
-    const displayUrl = cfg.url || "";
-    const displayDesc = cfg.description || "";
-    const displayIcon = cfg.icon || "";
-    const nameHtml = displayUrl
-      ? `<a href="${esc(displayUrl)}" target="_blank" rel="noopener" class="app-card-link text-decoration-none" data-app-url="${esc(displayUrl)}">${esc(displayName)}</a>`
-      : `<span class="app-card-name">${esc(displayName)}</span>`;
-    const iconHtml = displayIcon ? `<i class="bi ${esc(displayIcon)} app-card-icon text-accent me-2"></i>` : "";
-    const descHtml = displayDesc ? `<div class="app-card-description text-muted small">${esc(displayDesc)}</div>` : "";
-    return `
-    <div class="col-12 col-sm-6 col-lg-4 col-xl-3">
-      <div class="app-card" data-id="${esc(x.id)}" data-name="${esc(x.name)}" role="button" tabindex="0" aria-label="View ${esc(displayName)} details">
-        <div class="app-card-header">
-          <div class="app-card-title-row">
-            ${iconHtml}${nameHtml}
-          </div>
-          <div class="app-card-actions">
-            <button class="btn btn-sm btn-outline-secondary app-edit-btn" data-edit-name="${esc(x.name)}" title="Configure tile" aria-label="Configure ${esc(displayName)}">
-              <i class="bi bi-pencil-square"></i>
-            </button>
-          </div>
+    const group = (cfg.group || "").trim();
+    const groupKey = group || "\uFFFFOther"; // "Other" sorts last
+    if (!appsByGroup.has(groupKey)) {
+      appsByGroup.set(groupKey, { label: group || "Other", items: [] });
+    }
+    appsByGroup.get(groupKey).items.push(x);
+  }
+
+  // Sort items within each group by order, then name
+  for (const group of appsByGroup.values()) {
+    group.items.sort((a, b) => {
+      const cfgA = state.appConfig[a.name] || {};
+      const cfgB = state.appConfig[b.name] || {};
+      const orderA = cfgA.order || 0;
+      const orderB = cfgB.order || 0;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.name.localeCompare(b.name);
+    });
+  }
+
+  // Sort groups: named groups alphabetically, then "Other" last
+  const sortedGroups = [...appsByGroup.entries()].sort(([keyA], [keyB]) => {
+    if (keyA === "\uFFFFOther") return 1;
+    if (keyB === "\uFFFFOther") return -1;
+    return appsByGroup.get(keyA).label.localeCompare(appsByGroup.get(keyB).label);
+  });
+
+  // Flatten in group order for pagination
+  const flatForPagination = [];
+  for (const [, group] of sortedGroups) {
+    flatForPagination.push(...group.items);
+  }
+
+  // Apply pagination to the flat list
+  containersPagination.adjustPage(containersPagination.getTotalPages(flatForPagination));
+  const paginated = containersPagination.getPaginatedList(flatForPagination);
+
+  // Re-group the paginated results for rendering
+  const paginatedByGroup = new Map();
+  for (const x of paginated) {
+    const cfg = state.appConfig[x.name] || {};
+    const group = (cfg.group || "").trim();
+    const groupKey = group || "\uFFFFOther";
+    if (!paginatedByGroup.has(groupKey)) {
+      paginatedByGroup.set(groupKey, { label: group || "Other", items: [] });
+    }
+    paginatedByGroup.get(groupKey).items.push(x);
+  }
+
+  // Sort paginated groups: named groups alphabetically, then "Other" last
+  const sortedPaginatedGroups = [...paginatedByGroup.entries()].sort(([keyA], [keyB]) => {
+    if (keyA === "\uFFFFOther") return 1;
+    if (keyB === "\uFFFFOther") return -1;
+    return paginatedByGroup.get(keyA).label.localeCompare(paginatedByGroup.get(keyB).label);
+  });
+
+  // Render grouped cards
+  let cardsHtml = "";
+  for (const [, group] of sortedPaginatedGroups) {
+    if (group.items.length === 0) continue;
+    cardsHtml += `
+      <div class="col-12 mb-3">
+        <h6 class="text-muted small text-uppercase fw-semibold mb-2 border-bottom pb-1">
+          ${esc(group.label)}
+        </h6>
+        <div class="row g-3">
+          ${group.items.map(x => {
+            const cfg = state.appConfig[x.name] || {};
+            const displayName = cfg.name || x.name;
+            const displayUrl = cfg.url || "";
+            const displayDesc = cfg.description || "";
+            const displayIcon = cfg.icon || "";
+            const nameHtml = displayUrl
+              ? `<a href="${esc(displayUrl)}" target="_blank" rel="noopener" class="app-card-link text-decoration-none" data-app-url="${esc(displayUrl)}">${esc(displayName)}</a>`
+              : `<span class="app-card-name">${esc(displayName)}</span>`;
+            const iconHtml = cfg.icon ? `<i class="bi ${esc(cfg.icon)} app-card-icon text-accent me-2"></i>` : "";
+            const descHtml = displayDesc ? `<div class="app-card-description text-muted small">${esc(displayDesc)}</div>` : "";
+            return `
+            <div class="col-12 col-sm-6 col-lg-4 col-xl-3">
+              <div class="app-card" data-id="${esc(x.id)}" data-name="${esc(x.name)}" role="button" tabindex="0" aria-label="View ${esc(displayName)} details">
+                <div class="app-card-header">
+                  <div class="app-card-title-row">
+                    ${iconHtml}${nameHtml}
+                  </div>
+                  <div class="app-card-actions">
+                    <button class="btn btn-sm btn-outline-secondary app-edit-btn" data-edit-name="${esc(x.name)}" title="Configure tile" aria-label="Configure ${esc(displayName)}">
+                      <i class="bi bi-pencil-square"></i>
+                    </button>
+                  </div>
+                </div>
+                <div class="app-card-status-row">
+                  <div class="app-card-status">
+                    ${badge(x.state)}
+                    <span class="app-status-indicator st-${esc(x.state)}" aria-hidden="true"></span>
+                  </div>
+                </div>
+                ${descHtml}
+                <div class="app-card-image text-muted small">${esc(x.image)}</div>
+              </div>
+            </div>`;
+          }).join("")}
         </div>
-        <div class="app-card-status-row">
-          <div class="app-card-status">
-            ${badge(x.state)}
-            <span class="app-status-indicator st-${esc(x.state)}" aria-hidden="true"></span>
-          </div>
-        </div>
-        ${descHtml}
-        <div class="app-card-image text-muted small">${esc(x.image)}</div>
-      </div>
-    </div>`;
-  }).join("") || `<div class="col-12"><div class="text-center text-muted py-4">No applications found</div></div>`;
+      </div>`;
+  }
+
+  cardsHtml = cardsHtml || `<div class="col-12"><div class="text-center text-muted py-4">No applications found</div></div>`;
+  $("#dashboard-apps").innerHTML = cardsHtml;
 
   renderDashboardPagination();
 
   // Attach click/keyboard handlers to application cards
   $$("#dashboard-apps .app-card").forEach(card => {
     card.addEventListener("click", (e) => {
-      // Don't open details if clicking the edit button or a link
       if (e.target.closest(".app-edit-btn") || e.target.closest(".app-card-link")) return;
       openDetails(card.dataset.id, card.dataset.id);
     });
@@ -704,7 +777,7 @@ function renderSummary() {
   // Attach edit button handlers
   $$("#dashboard-apps .app-edit-btn").forEach(btn => {
     btn.addEventListener("click", (e) => {
-      e.stopPropagation(); // Prevent card click handler
+      e.stopPropagation();
       openAppConfig(btn.dataset.editName);
     });
   });
