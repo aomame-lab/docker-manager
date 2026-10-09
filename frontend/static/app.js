@@ -113,7 +113,41 @@ function getFallbackIconUrl() {
    Uses a prefix that won't collide with Docker container names (which follow ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$).
    The prefix "manual-" is safe since Docker names can't start with "manual-" followed by a UUID pattern. */
 function generateManualAppId() {
-  return "manual-" + crypto.randomUUID();
+  // Use crypto.randomUUID() when available (secure, standard)
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return "manual-" + crypto.randomUUID();
+  }
+  // Fallback: use crypto.getRandomValues() when available (secure, widely supported)
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    // Set version (4) and variant (RFC 4122)
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
+    return "manual-" + bytesToHex(bytes);
+  }
+  // Last resort: timestamp + random (not cryptographically secure, but unique enough for client-generated IDs)
+  // Only used when no crypto API is available (very old browsers or non-secure contexts)
+  const timestamp = Date.now().toString(36);
+  const randomPart = Math.random().toString(36).substring(2, 15);
+  return "manual-" + timestamp + "-" + randomPart;
+}
+
+/* Convert Uint8Array to hex string */
+function bytesToHex(bytes) {
+  const hex = [];
+  for (let i = 0; i < bytes.length; i++) {
+    const byte = bytes[i];
+    hex.push((byte >>> 4).toString(16));
+    hex.push((byte & 0x0f).toString(16));
+  }
+  return [
+    hex.slice(0, 8).join(""),
+    hex.slice(8, 12).join(""),
+    hex.slice(12, 16).join(""),
+    hex.slice(16, 20).join(""),
+    hex.slice(20, 32).join(""),
+  ].join("-");
 }
 
 /* Normalize a string for icon matching: lowercase, remove hyphens/underscores/spaces */
