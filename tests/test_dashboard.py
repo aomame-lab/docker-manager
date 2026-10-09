@@ -184,3 +184,65 @@ def test_list_apps_returns_all():
     assert len(apps) == 3
     ids = [a["appId"] for a in apps]
     assert set(ids) == {"a", "b", "c"}
+
+
+def test_create_rejects_duplicate_display_name():
+    setup_module()
+    create_app({"appId": "a", "displayName": "Grafana"})
+    with pytest.raises(ValueError, match="already in use"):
+        create_app({"appId": "b", "displayName": "Grafana"})
+
+
+def test_create_rejects_duplicate_display_name_case_insensitive():
+    setup_module()
+    create_app({"appId": "a", "displayName": "Grafana"})
+    with pytest.raises(ValueError, match="already in use"):
+        create_app({"appId": "b", "displayName": "grafana"})
+
+
+def test_create_rejects_duplicate_display_name_trimmed():
+    setup_module()
+    create_app({"appId": "a", "displayName": "Grafana"})
+    with pytest.raises(ValueError, match="already in use"):
+        create_app({"appId": "b", "displayName": "  Grafana  "})
+
+
+def test_create_rejects_empty_display_name():
+    setup_module()
+    with pytest.raises(ValueError, match="empty or whitespace"):
+        create_app({"appId": "a", "displayName": ""})
+    with pytest.raises(ValueError, match="empty or whitespace"):
+        create_app({"appId": "b", "displayName": "   "})
+
+
+def test_update_allows_same_display_name():
+    setup_module()
+    create_app({"appId": "a", "displayName": "Grafana"})
+    # Should not raise when updating with same name
+    updated = update_app("a", {"displayName": "Grafana"})
+    assert updated["displayName"] == "Grafana"
+
+
+def test_update_rejects_duplicate_display_name():
+    setup_module()
+    create_app({"appId": "a", "displayName": "Grafana"})
+    create_app({"appId": "b", "displayName": "Prometheus"})
+    with pytest.raises(ValueError, match="already in use"):
+        update_app("b", {"displayName": "Grafana"})
+
+
+def test_update_rejects_duplicate_display_name_case_insensitive():
+    setup_module()
+    create_app({"appId": "a", "displayName": "Grafana"})
+    create_app({"appId": "b", "displayName": "Prometheus"})
+    with pytest.raises(ValueError, match="already in use"):
+        update_app("b", {"displayName": "grafana"})
+
+
+def test_update_rejects_empty_display_name():
+    setup_module()
+    create_app({"appId": "a", "displayName": "Grafana"})
+    with pytest.raises(ValueError, match="empty or whitespace"):
+        update_app("a", {"displayName": ""})
+    with pytest.raises(ValueError, match="empty or whitespace"):
+        update_app("a", {"displayName": "   "})

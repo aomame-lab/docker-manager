@@ -142,6 +142,10 @@ is re-derived from the Docker Engine on each request.
   throws `Error(message)`. No retries, no auth header injection, no
   cancellation, no request deduplication. **Note:** when `AUTH_TOKEN` is set the
   frontend does **not** send the token — see Known Limitations.
+  The `api()` helper handles `204 No Content` by returning `null` instead of
+  attempting to parse JSON. For endpoints that return `204 No Content` (e.g.,
+  `DELETE /api/dashboard/apps/{appId}`), callers should use `authFetch` directly
+  to avoid JSON parsing errors on empty responses.
 
 ### 2.4 Docker integration
 
@@ -227,11 +231,13 @@ call `svc.client` directly.
 | GET | `/api/backups/{filename}/summary` | yes | Restore summary for stored backup |
 | POST | `/api/restore/preview` | yes | Upload + summarize |
 | POST | `/api/restore` | yes | Upload + restore (`renames`, `start`, `restore_volumes`) |
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
 | GET | `/api/dashboard/apps` | yes | List persisted dashboard app configs |
 | POST | `/api/dashboard/apps` | yes | Create dashboard app config, `201` |
 | GET | `/api/dashboard/apps/{app_id}` | yes | Get single dashboard app config |
 | PUT | `/api/dashboard/apps/{app_id}` | yes | Update dashboard app config |
-| DELETE | `/api/dashboard/apps/{app_id}` | yes | Delete dashboard app config |
+| DELETE | `/api/dashboard/apps/{app_id}` | yes | Delete dashboard app config, returns `204 No Content` |
 | POST | `/api/restore/preview` | yes | Upload + summarize |
 | POST | `/api/restore` | yes | Upload + restore (`renames`, `start`, `restore_volumes`) |
 
@@ -534,11 +540,14 @@ Status is verified against the code cited, not against `README.md` claims.
 | 52 | Dashboard application configuration | **Implemented** | Edit modal (`#app-config-modal`), persist to `BACKUP_DIR/dashboard-apps.json`; fields: display name (defaults to container name), URL, description, icon, group, order |
 | 53 | Dashboard application persistence | **Implemented** | Server-side JSON (`BACKUP_DIR/dashboard-apps.json`); survives browser refresh & restart; atomic writes; `model_dump(mode="json")` for HttpUrl serialization |
 | 54 | Dashboard application API | **Implemented** | `GET/POST/PUT/DELETE /api/dashboard/apps`; authenticated; `appId` = container name (stable) |
-| 55 | Inferred container URLs | **Implemented** | `getEffectiveUrl()` `app.js:104-109` returns saved URL > inferred URL > null; `inferContainerUrl()` `app.js:1483-1499` derives HTTP(S) URL from published TCP ports; card name clickable immediately without modal save; inferred URLs never persisted |
-| 56 | Selfh.st icon search & automatic matching | **Implemented** | `loadIconIndex()` `app.js:51-78` fetches from jsDelivr CDN; cached in memory; `searchIcons()` `app.js:80-90`; `renderAppIcon()` `app.js:33-58` priority: explicit icon > auto-match > fallback; `findAutoIconMatch()` `app.js:115-138` exact normalized match on slug/name, then token-based unambiguous match; network/index failure never blocks Dashboard; fallback `/static/logo-2.svg` |
-| 57 | Group autocomplete | **Implemented** | `setupGroupAutocomplete()` `app.js:1623-1728`; suggestions from `state.appConfig`; case-insensitive dedup; prefix matches before substring; Arrow Up/Down/Enter/Escape; click selects exact group; users may type new group; empty group / "Other" preserved |
-| 55 | Footer version + live engine info | **Implemented** | `V.{app_version}`, `Docker {version} · API {api} · {os}` — only refreshed on `loadSystem()` |
-| 56 | Engine connection badge | **Implemented** | `#engine-status` ok/err |
+| 55 | Manual application creation | **Implemented** | "Add application" button (`#btn-add-app`) creates manual apps with `type: "manual"`; unique `appId` via `generateManualAppId()` (`app.js:115-119`); no container required; reuses same modal and persistence; manual apps persist across reloads/restarts |
+| 56 | Inferred container URLs | **Implemented** | `getEffectiveUrl()` `app.js:104-109` returns saved URL > inferred URL > null; `inferContainerUrl()` `app.js:1483-1499` derives HTTP(S) URL from published TCP ports; card name clickable immediately without modal save; inferred URLs never persisted; **not applied to manual apps** |
+| 57 | Selfh.st icon search & automatic matching | **Implemented** | `loadIconIndex()` `app.js:51-78` fetches from jsDelivr CDN; cached in memory; `searchIcons()` `app.js:80-90`; `renderAppIcon()` `app.js:33-58` priority: explicit icon > auto-match > fallback; `findAutoIconMatch()` `app.js:115-138` exact normalized match on slug/name, then token-based unambiguous match; network/index failure never blocks Dashboard; fallback `/static/logo-2.svg`; **auto-match skipped for manual apps** |
+| 58 | Group autocomplete | **Implemented** | `setupGroupAutocomplete()` `app.js:1623-1728`; suggestions from `state.appConfig`; case-insensitive dedup; prefix matches before substring; Arrow Up/Down/Enter/Escape; click selects exact group; users may type new group; empty group / "Other" preserved |
+| 59 | Tile deletion from edit modal | **Implemented** | Delete button in `#app-config-modal`; native `confirm()` dialog; calls `DELETE /api/dashboard/apps/{appId}`; on success reloads config, hides modal, re-renders dashboard; never stops/removes underlying Docker container |
+| 60 | Duplicate display-name prevention | **Implemented** | Backend validation in `dashboard_store.py` (`_check_duplicate_display_name`); case-insensitive, trimmed comparison; rejects empty/whitespace; excludes current app on update; applies to both manual and Docker-backed apps |
+| 61 | Footer version + live engine info | **Implemented** | `V.{app_version}`, `Docker {version} · API {api} · {os}` — only refreshed on `loadSystem()` |
+| 62 | Engine connection badge | **Implemented** | `#engine-status` ok/err |
 | 51 | Frontend asset cache busting | **Implemented** | `?v={{APP_VERSION}}` on `app.js` + `style.css`; `index.html` read per request |
 | 52 | Responsive layout | **Implemented** | Bootstrap grid + `.d-md-none` / `.d-none d-md-block` swap |
 | 53 | Dark/cyan theme | **Implemented** | CSS custom properties in `style.css:1-8` |
@@ -595,19 +604,24 @@ Rendered by `renderSummary()` `app.js:785-860`. Cards are grouped by the
 group, cards are sorted by `order` then name. The flat list is paginated
 via `containersPagination` (shared with Containers page).
 
+Two types of applications exist:
+- **Docker-backed apps** (`type: "docker"`): correspond to discovered Docker containers; `appId` = container name.
+- **Manual apps** (`type: "manual"`): user-created entries with no container; `appId` = generated unique ID (e.g., `manual-<uuid>`).
+
 Each card (`app-card`) shows:
 
 - **Icon**: via `renderAppIcon(cfg.icon, containerName)` `app.js:33-58`.
   Priority: explicit saved icon (Bootstrap `bi-*` or selfh.st slug) →
   automatic selfh.st match (exact normalized slug/name, then token-based
   unambiguous match) → `/static/logo-2.svg` fallback.
-- **Name**: `cfg.name` (saved display name) or container name. If a URL is
-  available (saved or inferred), the name is an `<a>` link opening in a new
+  **Auto-match is skipped for manual apps.**
+- **Name**: `cfg.name` (saved display name) or container name (Docker apps) / manual app ID (manual apps). If a URL is
+  available (saved or inferred for Docker apps), the name is an `<a>` link opening in a new
   tab; otherwise plain text.
-- **Status badge + indicator dot**: `badge(x.state)` + colored dot.
+- **Status badge + indicator dot**: Docker apps show container state (`badge(x.state)` + colored dot). Manual apps show a neutral "Manual" badge.
 - **Description**: `cfg.description` if set.
-- **Image name**: `x.image` in muted small text.
-- **Edit button** (hover/focus): opens `#app-config-modal` for that container.
+- **Image name**: `x.image` in muted small text (Docker apps only; hidden for manual apps).
+- **Edit button** (hover/focus): opens `#app-config-modal` for that application.
 
 ### 7.4 URL behaviour (clickable names)
 
@@ -618,12 +632,12 @@ URL with priority:
 2. **Inferred URL** from `inferContainerUrl(container)` `app.js:1483-1499`:
    scans `container.ports` for published TCP ports, returns
    `http(s)://hostname:hostPort` (https for 443/8443). Uses `location.hostname`,
-   never assumes `localhost`.
+   never assumes `localhost`. **Only for Docker-backed apps.**
 3. **Null** — no link rendered.
 
 **Inferred URLs make the card name clickable immediately on Dashboard load
 without opening or saving the modal.** Inferred URLs are **never persisted**;
-only an explicit save writes `cfg.url`.
+only an explicit save writes `cfg.url`. **Manual apps never receive inferred URLs.**
 
 ### 7.5 System Resources cards
 
@@ -661,7 +675,17 @@ in `#dashboard-apps`.
 | `GET /api/volumes` | Dashboard load | volume count for System Resources |
 | `GET /api/networks` | Dashboard load | network count for System Resources |
 
-### 7.9 State coupling with the Containers page
+### 7.9 Tile deletion from Dashboard
+
+Each application card has an edit button (pencil icon) that opens the `#app-config-modal`. The modal now includes a **Delete** button (red, destructive style) separate from the Save button.
+
+- Clicking Delete shows a native `confirm()` dialog with the application's current display name.
+- On confirmation, the frontend calls `DELETE /api/dashboard/apps/{appId}` using `authFetch` (not the generic `api()` helper) to correctly handle the `204 No Content` response.
+- On success: the modal closes, `loadAppConfig()` reloads the persisted configuration, the Dashboard re-renders, and a success toast appears.
+- On failure: an error toast is shown, the modal remains open, and the tile is not removed.
+- **Deleting a dashboard tile/configuration never stops or removes the underlying Docker container or image.** It only removes the persisted dashboard configuration from `BACKUP_DIR/dashboard-apps.json`.
+
+### 7.10 State coupling with the Containers page
 
 Because both pages read `state.containers` and `containersPagination`
 (shared `search`/`filter`/`sort`/`pageSize`/`currentPage`):
@@ -778,7 +802,7 @@ form field; the restore router rejects a non-dict payload with 400.
 - Framework: `pytest` `8.3.4`, run as `pytest tests -q`.
 - No `pytest.ini` / `pyproject.toml` / `setup.cfg`; configuration is default,
   rootdir is the repository root.
-- Two test modules, **21 tests total**, all passing at baseline.
+- Three test modules, **46 tests total**, all passing at baseline.
 - `tests/conftest.py`
   - Sets `BACKUP_DIR` to the repo's `backups/` before importing the app.
   - Inserts `backend/` on `sys.path`, so modules are imported as `app.*`
@@ -796,12 +820,14 @@ form field; the restore router rejects a non-dict payload with 400.
   non-tar input, empty containers, invalid name, missing image, future version,
   and the path-traversal defences (`_safe_member`, `safe_extract` blocked and
   allowed cases).
-- `tests/test_dashboard.py` (17 tests): dashboard store path resolution, appId
+- `tests/test_dashboard.py` (25 tests): dashboard store path resolution, appId
   validation, missing file returns empty list, POST creates application, duplicate
   POST rejected, GET returns saved application, PUT updates application, PUT
   preserves createdAt, PUT unknown ID rejected, DELETE removes application, DELETE
   non-existent raises, malformed input rejected, persistence survives store reload,
-  atomic write leaves valid JSON, list_apps returns all.
+  atomic write leaves valid JSON, list_apps returns all, duplicate display name
+  validation on create/update, case-insensitive comparison, whitespace trimming,
+  empty name rejection, unchanged name allowed on update.
 
 Gaps in coverage (all current, none are failures):
 
@@ -813,11 +839,12 @@ Gaps in coverage (all current, none are failures):
 - No tests for auth (`AUTH_TOKEN` set / unset), despite it being a security
   feature.
 - No tests for the WebSocket log stream.
+- No tests for the tile deletion endpoint or duplicate name validation on the frontend.
 - No tests for the upload size limit or filename traversal on
   `/api/backups/{filename}`.
 - No frontend tests of any kind — the JS is entirely untested.
 
-Baseline result: **21 passed**.
+Baseline result: **46 passed**.
 
 ---
 

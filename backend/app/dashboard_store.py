@@ -39,6 +39,29 @@ def _validate_str(value: str | None, max_len: int, field: str) -> str | None:
     return value
 
 
+def _normalize_display_name(name: str) -> str:
+    """Normalize display name for comparison: trim whitespace and lowercase."""
+    return (name or "").strip().lower()
+
+
+def _check_duplicate_display_name(display_name: str, exclude_app_id: str | None = None) -> None:
+    """Check if a display name already exists (case-insensitive, trimmed).
+
+    Raises ValueError if duplicate found.
+    """
+    if not display_name or not display_name.strip():
+        raise ValueError("Display name cannot be empty or whitespace only")
+
+    normalized = _normalize_display_name(display_name)
+    apps = list_apps()
+    for app in apps:
+        if exclude_app_id and app["appId"] == exclude_app_id:
+            continue
+        existing_name = app.get("displayName", "")
+        if _normalize_display_name(existing_name) == normalized:
+            raise ValueError(f"Display name '{display_name}' is already in use (case-insensitive)")
+
+
 def _default_store() -> dict[str, Any]:
     return {
         "version": STORE_VERSION,
@@ -109,9 +132,22 @@ def create_app(data: dict[str, Any]) -> dict[str, Any]:
     if any(a["appId"] == data["appId"] for a in apps):
         raise ValueError(f"Application with appId '{data['appId']}' already exists")
 
+    # Validate type
+    app_type = data.get("type", "docker")
+    if app_type not in ("docker", "manual"):
+        raise ValueError("type must be 'docker' or 'manual'")
+
+    # Validate display name uniqueness
+    display_name = data.get("displayName")
+    if display_name is not None:
+        if not display_name or not display_name.strip():
+            raise ValueError("Display name cannot be empty or whitespace only")
+        _check_duplicate_display_name(display_name)
+
     now = datetime.now(timezone.utc).isoformat()
     app = {
         "appId": data["appId"],
+        "type": app_type,
         "containerName": _validate_str(data.get("containerName"), 255, "containerName"),
         "imageDigest": _validate_str(data.get("imageDigest"), 255, "imageDigest"),
         "displayName": _validate_str(data.get("displayName"), 255, "displayName") or data["appId"],
@@ -142,8 +178,23 @@ def update_app(app_id: str, data: dict[str, Any]) -> dict[str, Any]:
         raise KeyError(f"Application '{app_id}' not found")
 
     existing = apps[idx]
+    # Validate type if provided
+    app_type = data.get("type", existing.get("type", "docker"))
+    if app_type not in ("docker", "manual"):
+        raise ValueError("type must be 'docker' or 'manual'")
+    # Prevent changing type from docker to manual or vice versa if it would cause issues
+    # For now, allow type changes but validate
+
+    # Validate display name uniqueness if provided
+    if "displayName" in data:
+        display_name = data["displayName"]
+        if not display_name or not display_name.strip():
+            raise ValueError("Display name cannot be empty or whitespace only")
+        _check_duplicate_display_name(display_name, exclude_app_id=app_id)
+
     updated = {
         "appId": app_id,
+        "type": app_type,
         "containerName": _validate_str(data.get("containerName", existing.get("containerName")), 255, "containerName"),
         "imageDigest": _validate_str(data.get("imageDigest", existing.get("imageDigest")), 255, "imageDigest"),
         "displayName": _validate_str(data.get("displayName", existing["displayName"]), 255, "displayName"),

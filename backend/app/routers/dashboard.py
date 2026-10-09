@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"],
 class AppBase(BaseModel):
     appId: str = Field(min_length=1, max_length=128,
                        pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
+    type: str = Field(default="docker", pattern=r"^(docker|manual)$")
     containerName: str | None = Field(default=None, max_length=255)
     imageDigest: str | None = Field(default=None, max_length=255)
     displayName: str | None = Field(default=None, max_length=255)
@@ -30,6 +31,7 @@ class AppCreate(AppBase):
 
 
 class AppUpdate(BaseModel):
+    type: str | None = Field(default=None, pattern=r"^(docker|manual)$")
     containerName: str | None = Field(default=None, max_length=255)
     imageDigest: str | None = Field(default=None, max_length=255)
     displayName: str | None = Field(default=None, max_length=255)
@@ -49,6 +51,7 @@ def _app_to_response(app: dict) -> dict:
     """Convert stored app dict to response format."""
     return {
         "appId": app["appId"],
+        "type": app.get("type", "docker"),
         "containerName": app.get("containerName"),
         "imageDigest": app.get("imageDigest"),
         "displayName": app.get("displayName", app["appId"]),

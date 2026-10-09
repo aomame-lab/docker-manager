@@ -68,6 +68,9 @@
         <option value="created">Created</option>
       </select>
       <div class="ms-auto d-flex gap-2 align-items-center">
+        <button class="btn btn-sm btn-accent" id="btn-add-app" title="Add manual application">
+          <i class="bi bi-plus-lg"></i> Add application
+        </button>
         <label class="form-label mb-0 small text-muted" for="dashboard-page-size" title="Applications per page">Show</label>
         <select class="form-select form-select-sm w-auto" id="dashboard-page-size" aria-label="Applications per page">
           <option value="10" selected>10</option>
@@ -376,12 +379,19 @@
         </div>
         <div class="mb-3">
           <label class="form-label" for="app-config-icon">Icon (optional)</label>
-          <input type="text" class="form-control" id="app-config-icon" placeholder="bootstrap icon name, e.g., bi-graph-up" autocomplete="off">
-          <div class="form-text">Bootstrap Icons class name (e.g., bi-speedometer2, bi-server, bi-database)</div>
+          <div class="input-group">
+            <input type="search" class="form-control" id="app-config-icon-search" placeholder="Search selfh.st icons (e.g., grafana, prometheus…)" autocomplete="off" aria-describedby="icon-search-help">
+            <input type="hidden" id="app-config-icon" name="icon">
+            <span class="input-group-text" id="icon-search-help" title="Powered by selfh.st"><i class="bi bi-search"></i></span>
+          </div>
+          <div id="app-config-icon-results" class="icon-search-results mt-2 d-none"></div>
         </div>
         <div class="mb-3">
           <label class="form-label" for="app-config-group">Group (optional)</label>
-          <input type="text" class="form-control" id="app-config-group" placeholder="e.g., monitoring, databases, web" autocomplete="off">
+          <div class="position-relative">
+            <input type="text" class="form-control" id="app-config-group" placeholder="e.g., monitoring, databases, web" autocomplete="off" aria-autocomplete="list" aria-controls="app-config-group-suggestions">
+            <div id="app-config-group-suggestions" class="group-suggestions d-none position-absolute w-100" role="listbox" aria-label="Group suggestions"></div>
+          </div>
           <div class="form-text">Logical group for organizing applications</div>
         </div>
         <div class="mb-3">
@@ -395,6 +405,9 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-sm btn-danger ms-auto" id="app-config-delete">
+          <i class="bi bi-trash"></i> Delete
+        </button>
         <button type="submit" class="btn btn-sm btn-accent">Save</button>
       </div>
     </form>

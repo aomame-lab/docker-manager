@@ -19,6 +19,8 @@ const state = {
   // selfh.st icon index cache
   iconIndex: null,
   iconIndexPromise: null,
+  // Manual app creation draft state
+  manualAppDraft: null,
 };
 
 const $ = s => document.querySelector(s);
@@ -105,6 +107,13 @@ function getIconSvgUrl(slug) {
 
 function getFallbackIconUrl() {
   return "/static/logo-2.svg";
+}
+
+/* Generate a unique appId for manual applications.
+   Uses a prefix that won't collide with Docker container names (which follow ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$).
+   The prefix "manual-" is safe since Docker names can't start with "manual-" followed by a UUID pattern. */
+function generateManualAppId() {
+  return "manual-" + crypto.randomUUID();
 }
 
 /* Normalize a string for icon matching: lowercase, remove hyphens/underscores/spaces */
@@ -320,6 +329,10 @@ async function api(path, opts = {}) {
     } catch {}
     throw new Error(msg);
   }
+  // Handle 204 No Content responses (no body)
+  if (r.status === 204) {
+    return null;
+  }
   return r.headers.get("content-type")?.includes("json") ? r.json() : r;
 }
 
@@ -386,10 +399,15 @@ $("#app-config-form").addEventListener("submit", async e => {
   e.preventDefault();
   const id = $("#app-config-id").value;
   if (!id) return;
-  const isNew = !state.appConfig[id];
+  const cfg = state.appConfig[id] || {};
+  // An app is "new" if it's a manual draft, or a Docker app that hasn't been persisted yet
+  // (Docker apps are persisted on first save; they have no containerName in state.appConfig until saved)
+  const isNew = cfg.isDraft === true || (cfg.type !== "manual" && !cfg.containerName);
+  const appType = $("#app-config-modal").dataset.appType || "docker";
+  const isManual = appType === "manual";
   const payload = {
     appId: id,
-    containerName: id,
+    type: appType,
     displayName: $("#app-config-name").value.trim(),
     url: $("#app-config-url").value.trim() || undefined,
     description: $("#app-config-description").value.trim() || undefined,
@@ -397,6 +415,10 @@ $("#app-config-form").addEventListener("submit", async e => {
     group: $("#app-config-group").value.trim() || undefined,
     order: parseInt($("#app-config-order").value || "0", 10) || 0,
   };
+  // For Docker apps, include containerName; for manual apps, omit it
+  if (!isManual) {
+    payload.containerName = id;
+  }
   // Preserve containerName and imageDigest if editing existing
   const existing = state.appConfig[id] || {};
   if (existing.containerName) payload.containerName = existing.containerName;
@@ -421,6 +443,43 @@ $("#app-config-form").addEventListener("submit", async e => {
     toast("Application tile configuration saved", true);
   } catch (e) {
     toast("Save failed: " + e.message, false);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/* Delete application handler */
+$("#app-config-delete").addEventListener("click", async () => {
+  const id = $("#app-config-id").value;
+  if (!id) return;
+
+  const cfg = state.appConfig[id] || {};
+  const displayName = cfg.name || id;
+
+  // Use native confirm() instead of confirmModal to avoid Bootstrap modal stacking issues
+  if (!confirm(`Delete "${displayName}"? This removes the dashboard tile and its configuration. The underlying Docker container (if any) is NOT affected.`)) {
+    return;
+  }
+
+  const btn = $("#app-config-delete");
+  btn.disabled = true;
+  try {
+    // Use authFetch directly to handle 204 No Content response correctly
+    const r = await authFetch(`/api/dashboard/apps/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!r.ok) {
+      let msg = `${r.status}`;
+      try {
+        const data = await r.json();
+        msg = data.detail || msg;
+      } catch {}
+      throw new Error(msg);
+    }
+    await loadAppConfig();
+    bootstrap.Modal.getOrCreateInstance("#app-config-modal").hide();
+    if (state.page === "dashboard") renderSummary();
+    toast("Application deleted", true);
+  } catch (e) {
+    toast("Delete failed: " + e.message, false);
   } finally {
     btn.disabled = false;
   }
@@ -566,6 +625,7 @@ async function loadAppConfig() {
         order: app.order || 0,
         containerName: app.containerName,
         imageDigest: app.imageDigest,
+        type: app.type || "docker",
       };
     }
   } catch (e) {
@@ -675,6 +735,83 @@ function filteredContainers() {
   return [...list].sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
 }
 
+/* Build unified list of Dashboard applications: Docker containers + manual apps.
+   Manual apps are those in state.appConfig with type "manual" that don't have a matching Docker container.
+   Returns a sorted, filtered list supporting search, filter, and sort controls. */
+function getDashboardApplications() {
+  // Start with Docker containers
+  const dockerApps = filteredContainers();
+
+  // Find manual apps that don't have a matching Docker container
+  const manualApps = [];
+  for (const [appId, cfg] of Object.entries(state.appConfig)) {
+    if (cfg.type === "manual") {
+      // Check if there's a Docker container with the same name
+      const hasContainer = state.containers.some(c => c.name === appId);
+      if (!hasContainer) {
+        // Create a pseudo-container object for manual apps
+        manualApps.push({
+          id: appId,
+          name: appId,
+          short_id: "",
+          image: "",
+          state: "manual",
+          created: "",
+          stats: {},
+          ports: {},
+          // Add config fields for easy access
+          _cfg: state.appConfig[appId],
+        });
+      }
+    }
+  }
+
+  // Combine and apply search filter
+  const allApps = [...dockerApps, ...manualApps];
+
+  // Apply search filter
+  let list = allApps.filter(app => {
+    if (!state.search) return true;
+    const search = state.search.toLowerCase();
+    // Search by name for both Docker and manual apps
+    const nameMatch = app.name.toLowerCase().includes(search);
+    // For Docker apps, also search by image
+    const imageMatch = app.image && app.image.toLowerCase().includes(search);
+    return nameMatch || imageMatch;
+  });
+
+  // Apply state filter
+  // For Docker apps: filter by state (running, exited, stopped, restarting, paused)
+  // For manual apps: they only appear in "all" filter (or we could add a "manual" filter)
+  list = list.filter(app => {
+    if (state.filter === "all") return true;
+    if (state.filter === "manual") return app.state === "manual";
+    // Docker-specific states
+    return app.state === state.filter;
+  });
+
+  // Apply sorting
+  const sortKey = state.sort;
+  list = [...list].sort((a, b) => {
+    switch (sortKey) {
+      case "name":
+        return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+      case "state":
+        return a.state.localeCompare(b.state);
+      case "cpu":
+        return (b.stats?.cpu_percent || 0) - (a.stats?.cpu_percent || 0);
+      case "mem":
+        return (b.stats?.mem_usage || 0) - (a.stats?.mem_usage || 0);
+      case "created":
+        return (Date.parse(b.created) || 0) - (Date.parse(a.created) || 0);
+      default:
+        return 0;
+    }
+  });
+
+  return list;
+}
+
 function filteredImages() {
   let list = state.images.filter(i =>
     !state.imagesSearch ||
@@ -774,7 +911,8 @@ function renderSummary() {
 
   // Dashboard applications — grouped and paginated card grid.
   // Clamp BEFORE slicing so a poll that shrinks the result set lands on the last valid page.
-  const filtered = filteredContainers();
+  // Build unified list of applications: Docker containers + manual apps (from appConfig without matching container)
+  const filtered = getDashboardApplications();
 
   // Group applications by their group property, then sort groups and items.
   // Build a flat list in group order for pagination, then re-group for rendering.
@@ -849,15 +987,22 @@ function renderSummary() {
         <div class="row g-3">
           ${group.items.map(x => {
             const cfg = state.appConfig[x.name] || {};
-            const container = state.containers.find(c => c.name === x.name) || {};
+            const isManual = cfg.type === "manual";
+            const container = isManual ? {} : (state.containers.find(c => c.name === x.name) || {});
             const displayName = cfg.name || x.name;
             const displayUrl = getEffectiveUrl(x.name, container);
             const displayDesc = cfg.description || "";
             const nameHtml = displayUrl
               ? `<a href="${esc(displayUrl)}" target="_blank" rel="noopener" class="app-card-link text-decoration-none" data-app-url="${esc(displayUrl)}">${esc(displayName)}</a>`
               : `<span class="app-card-name">${esc(displayName)}</span>`;
-            const iconHtml = renderAppIcon(cfg.icon, x.name);
+            // For manual apps, don't auto-match icons; use explicit icon or fallback
+            const iconHtml = renderAppIcon(cfg.icon, isManual ? null : x.name);
             const descHtml = displayDesc ? `<div class="app-card-description text-muted small">${esc(displayDesc)}</div>` : "";
+            // For manual apps, show neutral status and no image
+            const statusHtml = isManual
+              ? `<div class="app-card-status"><span class="badge badge-state st-unknown">Manual</span><span class="app-status-indicator st-unknown" aria-hidden="true"></span></div>`
+              : `<div class="app-card-status">${badge(x.state)}<span class="app-status-indicator st-${esc(x.state)}" aria-hidden="true"></span></div>`;
+            const imageHtml = isManual ? "" : `<div class="app-card-image text-muted small">${esc(x.image)}</div>`;
             return `
             <div class="col-12 col-sm-6 col-lg-4 col-xl-3">
               <div class="app-card" data-id="${esc(x.id)}" data-name="${esc(x.name)}" role="button" tabindex="0" aria-label="View ${esc(displayName)} details">
@@ -872,13 +1017,10 @@ function renderSummary() {
                   </div>
                 </div>
                 <div class="app-card-status-row">
-                  <div class="app-card-status">
-                    ${badge(x.state)}
-                    <span class="app-status-indicator st-${esc(x.state)}" aria-hidden="true"></span>
-                  </div>
+                  ${statusHtml}
                 </div>
                 ${descHtml}
-                <div class="app-card-image text-muted small">${esc(x.image)}</div>
+                ${imageHtml}
               </div>
             </div>`;
           }).join("")}
@@ -1373,8 +1515,9 @@ async function openDetails(id, name) {
 // Open application configuration modal
 function openAppConfig(id) {
   const cfg = state.appConfig[id] || {};
-  const container = state.containers.find(c => c.name === id) || {};
-  const inferredUrl = inferContainerUrl(container);
+  const isManual = cfg.type === "manual";
+  const container = isManual ? {} : (state.containers.find(c => c.name === id) || {});
+  const inferredUrl = isManual ? null : inferContainerUrl(container);
   const iconValue = cfg.icon || "";
 
   // For selfh.st icons (non-bootstrap), show the slug in the search field
@@ -1382,7 +1525,7 @@ function openAppConfig(id) {
   const searchDisplayValue = isBootstrapIcon ? "" : iconValue;
 
   $("#app-config-id").value = id;
-  $("#app-config-name").value = cfg.name || container.name || "";
+  $("#app-config-name").value = cfg.name || (isManual ? "" : container.name) || "";
   $("#app-config-url").value = cfg.url || inferredUrl || "";
   $("#app-config-description").value = cfg.description || "";
   $("#app-config-icon").value = iconValue;
@@ -1391,6 +1534,9 @@ function openAppConfig(id) {
   $("#app-config-icon-results").classList.add("d-none");
   $("#app-config-group").value = cfg.group || "";
   $("#app-config-order").value = cfg.order || 0;
+
+  // Store the app type in a data attribute for the form submit handler
+  $("#app-config-modal").dataset.appType = cfg.type || "docker";
 
   // Pre-load icon index in background (non-blocking)
   loadIconIndex().catch(() => {});
@@ -1436,6 +1582,16 @@ function setupIconSearch() {
       resultsContainer.classList.add("d-none");
       resultsContainer.innerHTML = "";
       iconSearchSelectedSlug = null;
+      // Clean up manual app draft if it was not saved
+      if (state.manualAppDraft) {
+        const draftId = state.manualAppDraft;
+        const draftCfg = state.appConfig[draftId] || {};
+        // Only remove if it's a manual app that was just created (still a draft)
+        if (draftCfg.isDraft === true) {
+          delete state.appConfig[draftId];
+        }
+        state.manualAppDraft = null;
+      }
     });
   }
 }
@@ -1565,6 +1721,16 @@ function setupGroupAutocomplete() {
       suggestionsEl.classList.add("d-none");
       suggestionsEl.innerHTML = "";
       groupSuggestionsActiveIndex = -1;
+      // Clean up manual app draft if it was not saved
+      if (state.manualAppDraft) {
+        const draftId = state.manualAppDraft;
+        const draftCfg = state.appConfig[draftId] || {};
+        // Only remove if it's a manual app that was just created (no displayName set)
+        if (draftCfg.type === "manual" && !draftCfg.name) {
+          delete state.appConfig[draftId];
+        }
+        state.manualAppDraft = null;
+      }
     });
   }
 }
@@ -1886,9 +2052,30 @@ function restartPolling() {
   }, state.pollInterval);
 }
 
+/* Create a new manual application draft and open the config modal */
+function createManualApp() {
+  const newId = generateManualAppId();
+  // Create a minimal draft config in state.appConfig so openAppConfig can use it
+  // Mark as draft with isDraft: true so the form submit handler knows it's a new app
+  state.appConfig[newId] = {
+    type: "manual",
+    name: "",
+    url: "",
+    description: "",
+    icon: "",
+    group: "",
+    order: 0,
+    isDraft: true,
+  };
+  state.manualAppDraft = newId;
+  openAppConfig(newId);
+}
+
 wireLogin();
 setupIconSearch();
 setupGroupAutocomplete();
+// Add application button handler
+$("#btn-add-app").addEventListener("click", createManualApp);
 loadSystem().then(() => {
   $("#set-poll").value = Math.round(state.pollInterval / 1000);
   // Pre-load icon index in background for automatic matching (non-blocking)

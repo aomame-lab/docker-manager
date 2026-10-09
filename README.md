@@ -176,25 +176,20 @@ ports are displayed but not clickable.
 
 ## Dashboard Application Configuration
 
-Each discovered container gets an application card on the Dashboard. Click the
-pencil icon on a card to configure:
+Each discovered container gets an application card on the Dashboard. Additionally, you can create **manual applications** for external services or services not running as Docker containers. Click the **+ Add application** button on the Dashboard or the pencil icon on an existing card to configure:
 
-- **Display Name** — defaults to the container name; editable.
-- **URL** — if set, the card name becomes a link. If left empty, a URL is
-  **automatically inferred** from the container's published TCP ports
-  (e.g. `http://host:8080`). Saved URLs take priority over inferred ones.
-  Inferred URLs are never persisted.
+- **Display Name** — defaults to the container name for Docker-backed apps; empty for manual apps. Editable.
+- **URL** — if set, the card name becomes a link. For Docker-backed apps, if left empty, a URL is **automatically inferred** from the container's published TCP ports (e.g. `http://host:8080`). Saved URLs take priority over inferred ones. Inferred URLs are never persisted. Manual apps have no inferred URL.
 - **Description** — optional text shown on the card.
-- **Icon** — search and select from [selfh.st](https://selfh.st/icons/) icons.
-  If no icon is selected, one is **automatically matched** from the container
-  name (e.g. `grafana` → Grafana icon). Falls back to the default logo.
-- **Group** — optional logical group for organizing cards. Type to see
-  suggestions from existing groups (case-insensitive, prefix matches first).
-  Users may still enter a new group name.
+- **Icon** — search and select from [selfh.st](https://selfh.st/icons/) icons. For Docker-backed apps, if no icon is selected, one is **automatically matched** from the container name (e.g. `grafana` → Grafana icon). Falls back to the default logo. Manual apps use the explicit icon or the default logo.
+- **Group** — optional logical group for organizing cards. Type to see suggestions from existing groups (case-insensitive, prefix matches first). Users may still enter a new group name.
 - **Order** — display order within the group (lower numbers first).
 
-Configuration is saved to `BACKUP_DIR/dashboard-apps.json` on the server and
-survives browser refresh and container restarts.
+Click the **Delete** button (red trash icon) in the configuration modal to remove a tile. A confirmation dialog shows the current display name. Deleting a tile removes its dashboard configuration from `BACKUP_DIR/dashboard-apps.json` but **never stops or removes the underlying Docker container or image**.
+
+**Duplicate display names are not allowed** — names are compared case-insensitively and with whitespace trimmed. The current application is excluded when updating, so saving an unchanged name is always allowed.
+
+Configuration is saved to `BACKUP_DIR/dashboard-apps.json` on the server and survives browser refresh and container restarts. Manual applications persist across reloads and backend restarts and do not require a Docker container.
 
 ## Images
 
@@ -252,6 +247,9 @@ POST   /api/backups       GET  /api/backups
 GET    /api/backups/{file}/summary          GET  /api/backups/{file}/download
 DELETE /api/backups/{file}
 POST   /api/restore/preview                 POST /api/restore
+GET    /api/dashboard/apps                  GET  /api/dashboard/apps/{id}
+POST   /api/dashboard/apps                  PUT    /api/dashboard/apps/{id}
+DELETE /api/dashboard/apps/{id}
 ```
 
 ## Project structure
