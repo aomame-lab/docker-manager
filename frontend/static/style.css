@@ -135,6 +135,12 @@ body > .container-fluid { flex: 1 0 auto; width: 100%; }
 /* App card new elements (configurable tiles) */
 .app-card-title-row { display: flex; align-items: center; gap: .5rem; flex: 1; min-width: 0; }
 .app-card-icon { font-size: 1.1rem; flex-shrink: 0; }
+.app-card-icon-img {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
 .app-card-link { color: var(--dm-accent); word-break: break-word; }
 .app-card-link:hover { text-decoration: underline; }
 .app-card-actions { display: flex; align-items: center; flex-shrink: 0; }
@@ -211,3 +217,95 @@ a.port-chip:hover { background: var(--dm-accent-dim); color: #fff; }
 .sys-card-label { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: #7c90a8; margin-bottom: .5rem; }
 .sys-card-value { font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
 .sys-card-subtext { font-size: .72rem; margin-top: .5rem; }
+
+/* Icon search results in app config modal */
+.icon-search-results {
+  max-height: 240px;
+  overflow-y: auto;
+  background: #0d1524;
+  border: 1px solid var(--dm-border);
+  border-radius: .5rem;
+  padding: .5rem;
+}
+.icon-search-result {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: .5rem .75rem;
+  border-radius: .4rem;
+  cursor: pointer;
+  transition: background .1s;
+}
+.icon-search-result:hover {
+  background: rgba(56, 189, 248, .08);
+}
+.icon-search-result.selected {
+  background: rgba(56, 189, 248, .15);
+  border: 1px solid var(--dm-accent-dim);
+}
+.icon-search-thumb {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+.icon-search-result .icon-name {
+  flex: 1;
+  min-width: 0;
+  font-size: .85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.icon-search-result .icon-slug {
+  font-size: .7rem;
+  color: #64748b;
+  font-family: monospace;
+  white-space: nowrap;
+}
+.icon-search-empty {
+  text-align: center;
+  padding: 1rem;
+  color: #64748b;
+  font-size: .85rem;
+}
+.icon-search-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  color: var(--dm-accent);
+}
+
+/* Group autocomplete suggestions */
+.group-suggestions {
+  max-height: 200px;
+  overflow-y: auto;
+  background: #0d1524;
+  border: 1px solid var(--dm-border);
+  border-radius: .5rem;
+  padding: .25rem;
+  margin-top: .25rem;
+  z-index: 1050;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .3);
+}
+.group-suggestion {
+  padding: .5rem .75rem;
+  border-radius: .35rem;
+  cursor: pointer;
+  font-size: .85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background .1s;
+}
+.group-suggestion:hover,
+.group-suggestion.active {
+  background: rgba(56, 189, 248, .12);
+  color: var(--dm-accent);
+}
+.group-suggestion:focus {
+  outline: none;
+  background: rgba(56, 189, 248, .12);
+  color: var(--dm-accent);
+}

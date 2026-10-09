@@ -16,10 +16,141 @@ const state = {
   containersInitialLoadComplete: false,
   // Frontend-only application tile configuration (not persisted)
   appConfig: {},
+  // selfh.st icon index cache
+  iconIndex: null,
+  iconIndexPromise: null,
 };
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
+
+/* Render an icon for an application card.
+   iconValue can be:
+   - Bootstrap Icon class (e.g., "bi-speedometer2")
+   - selfh.st icon slug (e.g., "grafana")
+   - Empty/undefined (use fallback, then try auto-match from containerName)
+   containerName: optional, used for automatic icon matching when no explicit icon
+   Returns HTML string for the icon element. */
+function renderAppIcon(iconValue, containerName) {
+  // Priority 1: explicitly saved icon
+  if (iconValue) {
+    if (iconValue.startsWith("bi-")) {
+      return `<i class="bi ${esc(iconValue)} app-card-icon text-accent me-2"></i>`;
+    }
+    // selfh.st slug
+    return `<img src="${esc(getIconSvgUrl(iconValue))}" alt="" class="app-card-icon-img" loading="lazy" onerror="this.src='${esc(getFallbackIconUrl())}';">`;
+  }
+  // Priority 2: automatic match from container name (if index loaded)
+  if (containerName) {
+    const autoIcon = findAutoIconMatch(containerName);
+    if (autoIcon) {
+      return `<img src="${esc(getIconSvgUrl(autoIcon))}" alt="" class="app-card-icon-img" loading="lazy" onerror="this.src='${esc(getFallbackIconUrl())}';">`;
+    }
+  }
+  // Priority 3: fallback
+  return `<img src="${esc(getFallbackIconUrl())}" alt="" class="app-card-icon-img" loading="lazy" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22%3E%3Cpath fill=%22%2338bdf8%22 d=%22M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z%22/%3E%3C/svg%3E';">`;
+}
+
+/* ---------------------------------------------------------------- selfh.st icon index */
+/* The selfh.st icon index is loaded on-demand when the app config modal opens.
+   It is cached in memory for the session to avoid duplicate requests.
+   The index is fetched from the selfhst/icons GitHub repository via jsDelivr CDN. */
+const ICON_INDEX_URL = "https://cdn.jsdelivr.net/gh/selfhst/icons@main/index-consolidated.json";
+const ICON_SVG_BASE_URL = "https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/";
+
+async function loadIconIndex() {
+  if (state.iconIndex) return state.iconIndex;
+  if (state.iconIndexPromise) return state.iconIndexPromise;
+
+  state.iconIndexPromise = (async () => {
+    try {
+      const response = await fetch(ICON_INDEX_URL);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      // data is an array of [displayName, slug, ...flags, category, tags, number]
+      // We only need displayName and slug
+      state.iconIndex = data.map(entry => ({
+        name: entry[0],
+        slug: entry[1],
+        category: entry[7] || "",
+        tags: entry[8] || "",
+      }));
+      return state.iconIndex;
+    } catch (e) {
+      console.warn("Failed to load selfh.st icon index:", e);
+      state.iconIndex = [];
+      state.iconIndexPromise = null; // allow retry
+      return [];
+    }
+  })();
+
+  return state.iconIndexPromise;
+}
+
+function searchIcons(query, limit = 50) {
+  if (!state.iconIndex || !query.trim()) return [];
+  const q = query.toLowerCase().trim();
+  return state.iconIndex
+    .filter(icon =>
+      icon.name.toLowerCase().includes(q) ||
+      icon.slug.toLowerCase().includes(q) ||
+      (icon.tags && icon.tags.toLowerCase().includes(q))
+    )
+    .slice(0, limit);
+}
+
+function getIconSvgUrl(slug) {
+  return `${ICON_SVG_BASE_URL}${slug}.svg`;
+}
+
+function getFallbackIconUrl() {
+  return "/static/logo-2.svg";
+}
+
+/* Normalize a string for icon matching: lowercase, remove hyphens/underscores/spaces */
+function normalizeForIconMatch(s) {
+  return (s || "").toLowerCase().replace(/[-_\s]/g, "");
+}
+
+/* Find the best selfh.st icon slug for a container name.
+   Returns the slug if a confident match exists, otherwise null. */
+function findAutoIconMatch(containerName) {
+  if (!state.iconIndex || !containerName) return null;
+  const normalizedName = normalizeForIconMatch(containerName);
+  // 1. Exact normalized match on slug
+  let exactMatches = state.iconIndex.filter(icon =>
+    normalizeForIconMatch(icon.slug) === normalizedName
+  );
+  if (exactMatches.length === 1) return exactMatches[0].slug;
+  // 2. Exact normalized match on display name
+  exactMatches = state.iconIndex.filter(icon =>
+    normalizeForIconMatch(icon.name) === normalizedName
+  );
+  if (exactMatches.length === 1) return exactMatches[0].slug;
+  // 3. Token-based match: container name tokens that uniquely identify an icon
+  // Split container name into tokens (by common separators)
+  const tokens = normalizedName.split(/[-_\s]+/).filter(t => t.length > 2);
+  if (tokens.length === 0) return null;
+  // Find icons where slug contains all tokens (unambiguous)
+  const tokenMatches = state.iconIndex.filter(icon => {
+    const normSlug = normalizeForIconMatch(icon.slug);
+    return tokens.every(t => normSlug.includes(t));
+  });
+  if (tokenMatches.length === 1) return tokenMatches[0].slug;
+  // No confident match
+  return null;
+}
+
+/* ---------------------------------------------------------------- URL helpers */
+/* Return the effective URL for an application card.
+   Priority: saved URL > inferred URL from container ports > null.
+   Does not persist inferred URLs. */
+function getEffectiveUrl(appName, container) {
+  const cfg = state.appConfig[appName] || {};
+  if (cfg.url) return cfg.url;
+  if (container) return inferContainerUrl(container);
+  return null;
+}
 
 /* ---------------------------------------------------------------- helpers */
 const fmtBytes = b => {
@@ -718,14 +849,14 @@ function renderSummary() {
         <div class="row g-3">
           ${group.items.map(x => {
             const cfg = state.appConfig[x.name] || {};
+            const container = state.containers.find(c => c.name === x.name) || {};
             const displayName = cfg.name || x.name;
-            const displayUrl = cfg.url || "";
+            const displayUrl = getEffectiveUrl(x.name, container);
             const displayDesc = cfg.description || "";
-            const displayIcon = cfg.icon || "";
             const nameHtml = displayUrl
               ? `<a href="${esc(displayUrl)}" target="_blank" rel="noopener" class="app-card-link text-decoration-none" data-app-url="${esc(displayUrl)}">${esc(displayName)}</a>`
               : `<span class="app-card-name">${esc(displayName)}</span>`;
-            const iconHtml = cfg.icon ? `<i class="bi ${esc(cfg.icon)} app-card-icon text-accent me-2"></i>` : "";
+            const iconHtml = renderAppIcon(cfg.icon, x.name);
             const descHtml = displayDesc ? `<div class="app-card-description text-muted small">${esc(displayDesc)}</div>` : "";
             return `
             <div class="col-12 col-sm-6 col-lg-4 col-xl-3">
@@ -1242,14 +1373,296 @@ async function openDetails(id, name) {
 // Open application configuration modal
 function openAppConfig(id) {
   const cfg = state.appConfig[id] || {};
+  const container = state.containers.find(c => c.name === id) || {};
+  const inferredUrl = inferContainerUrl(container);
+  const iconValue = cfg.icon || "";
+
+  // For selfh.st icons (non-bootstrap), show the slug in the search field
+  const isBootstrapIcon = iconValue.startsWith("bi-");
+  const searchDisplayValue = isBootstrapIcon ? "" : iconValue;
+
   $("#app-config-id").value = id;
-  $("#app-config-name").value = cfg.name || "";
-  $("#app-config-url").value = cfg.url || "";
+  $("#app-config-name").value = cfg.name || container.name || "";
+  $("#app-config-url").value = cfg.url || inferredUrl || "";
   $("#app-config-description").value = cfg.description || "";
-  $("#app-config-icon").value = cfg.icon || "";
+  $("#app-config-icon").value = iconValue;
+  $("#app-config-icon-search").value = searchDisplayValue;
+  $("#app-config-icon-results").innerHTML = "";
+  $("#app-config-icon-results").classList.add("d-none");
   $("#app-config-group").value = cfg.group || "";
   $("#app-config-order").value = cfg.order || 0;
+
+  // Pre-load icon index in background (non-blocking)
+  loadIconIndex().catch(() => {});
+
   bootstrap.Modal.getOrCreateInstance("#app-config-modal").show();
+}
+
+/* selfh.st icon search UI for app config modal */
+let iconSearchDebounceTimer = null;
+let iconSearchSelectedSlug = null;
+
+function setupIconSearch() {
+  const searchInput = $("#app-config-icon-search");
+  const resultsContainer = $("#app-config-icon-results");
+  const hiddenInput = $("#app-config-icon");
+
+  if (!searchInput || !resultsContainer || !hiddenInput) return;
+
+  // Clear any existing listeners by cloning and replacing
+  const newSearchInput = searchInput.cloneNode(true);
+  searchInput.parentNode.replaceChild(newSearchInput, searchInput);
+
+  newSearchInput.addEventListener("input", () => {
+    clearTimeout(iconSearchDebounceTimer);
+    iconSearchDebounceTimer = setTimeout(() => {
+      performIconSearch(newSearchInput.value, resultsContainer, hiddenInput);
+    }, 150);
+  });
+
+  // Close results when clicking outside
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#app-config-icon-search") &&
+        !e.target.closest("#app-config-icon-results")) {
+      resultsContainer.classList.add("d-none");
+    }
+  });
+
+  // Handle modal hide to clean up
+  const modalEl = $("#app-config-modal");
+  if (modalEl) {
+    modalEl.addEventListener("hidden.bs.modal", () => {
+      clearTimeout(iconSearchDebounceTimer);
+      resultsContainer.classList.add("d-none");
+      resultsContainer.innerHTML = "";
+      iconSearchSelectedSlug = null;
+    });
+  }
+}
+
+/* Group autocomplete suggestions */
+let groupSuggestionsActiveIndex = -1;
+
+function getUniqueGroups() {
+  const groups = new Map();
+  for (const cfg of Object.values(state.appConfig)) {
+    const group = (cfg.group || "").trim();
+    if (!group) continue;
+    const lower = group.toLowerCase();
+    if (!groups.has(lower)) {
+      groups.set(lower, group);
+    }
+  }
+  return [...groups.values()].sort((a, b) => a.localeCompare(b));
+}
+
+function filterGroups(query, groups) {
+  if (!query.trim()) return groups;
+  const q = query.toLowerCase().trim();
+  const prefixMatches = [];
+  const substringMatches = [];
+  for (const group of groups) {
+    const lower = group.toLowerCase();
+    if (lower.startsWith(q)) {
+      prefixMatches.push(group);
+    } else if (lower.includes(q)) {
+      substringMatches.push(group);
+    }
+  }
+  return [...prefixMatches, ...substringMatches];
+}
+
+function renderGroupSuggestions(groups, inputEl, suggestionsEl) {
+  if (groups.length === 0) {
+    suggestionsEl.classList.add("d-none");
+    suggestionsEl.innerHTML = "";
+    groupSuggestionsActiveIndex = -1;
+    return;
+  }
+  suggestionsEl.innerHTML = groups.map((group, idx) => `
+    <div class="group-suggestion${idx === 0 ? " active" : ""}" 
+         data-group="${esc(group)}" 
+         role="option" 
+         tabindex="-1" 
+         aria-selected="${idx === 0}">${esc(group)}</div>`).join("");
+  suggestionsEl.classList.remove("d-none");
+  groupSuggestionsActiveIndex = 0;
+}
+
+function selectGroupSuggestion(group, inputEl, suggestionsEl) {
+  inputEl.value = group;
+  suggestionsEl.classList.add("d-none");
+  suggestionsEl.innerHTML = "";
+  groupSuggestionsActiveIndex = -1;
+  inputEl.focus();
+}
+
+function setupGroupAutocomplete() {
+  const inputEl = $("#app-config-group");
+  const suggestionsEl = $("#app-config-group-suggestions");
+
+  if (!inputEl || !suggestionsEl) return;
+
+  // Clear existing listeners by cloning and replacing
+  const newInputEl = inputEl.cloneNode(true);
+  inputEl.parentNode.replaceChild(newInputEl, inputEl);
+
+  newInputEl.addEventListener("focus", () => {
+    const groups = filterGroups(newInputEl.value, getUniqueGroups());
+    renderGroupSuggestions(groups, newInputEl, suggestionsEl);
+  });
+
+  newInputEl.addEventListener("input", () => {
+    const groups = filterGroups(newInputEl.value, getUniqueGroups());
+    renderGroupSuggestions(groups, newInputEl, suggestionsEl);
+  });
+
+  newInputEl.addEventListener("keydown", (e) => {
+    const items = suggestionsEl.querySelectorAll(".group-suggestion");
+    if (items.length === 0) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      groupSuggestionsActiveIndex = Math.min(groupSuggestionsActiveIndex + 1, items.length - 1);
+      updateGroupSuggestionSelection(items);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      groupSuggestionsActiveIndex = Math.max(groupSuggestionsActiveIndex - 1, 0);
+      updateGroupSuggestionSelection(items);
+    } else if (e.key === "Enter" && groupSuggestionsActiveIndex >= 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      selectGroupSuggestion(items[groupSuggestionsActiveIndex].dataset.group, newInputEl, suggestionsEl);
+    } else if (e.key === "Escape") {
+      suggestionsEl.classList.add("d-none");
+      suggestionsEl.innerHTML = "";
+      groupSuggestionsActiveIndex = -1;
+    }
+  });
+
+  // Click on suggestion
+  suggestionsEl.addEventListener("click", (e) => {
+    const item = e.target.closest(".group-suggestion");
+    if (item) {
+      selectGroupSuggestion(item.dataset.group, newInputEl, suggestionsEl);
+    }
+  });
+
+  // Close on outside click
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#app-config-group") &&
+        !e.target.closest("#app-config-group-suggestions")) {
+      suggestionsEl.classList.add("d-none");
+      suggestionsEl.innerHTML = "";
+      groupSuggestionsActiveIndex = -1;
+    }
+  });
+
+  // Handle modal hide to clean up
+  const modalEl = $("#app-config-modal");
+  if (modalEl) {
+    modalEl.addEventListener("hidden.bs.modal", () => {
+      suggestionsEl.classList.add("d-none");
+      suggestionsEl.innerHTML = "";
+      groupSuggestionsActiveIndex = -1;
+    });
+  }
+}
+
+function updateGroupSuggestionSelection(items) {
+  items.forEach((item, idx) => {
+    const isActive = idx === groupSuggestionsActiveIndex;
+    item.classList.toggle("active", isActive);
+    item.setAttribute("aria-selected", isActive);
+  });
+  // Scroll active item into view
+  const activeItem = items[groupSuggestionsActiveIndex];
+  if (activeItem) {
+    activeItem.scrollIntoView({ block: "nearest" });
+  }
+}
+
+async function performIconSearch(query, resultsContainer, hiddenInput) {
+  if (!query.trim()) {
+    resultsContainer.classList.add("d-none");
+    resultsContainer.innerHTML = "";
+    return;
+  }
+
+  resultsContainer.innerHTML = '<div class="icon-search-loading"><div class="spinner-border spinner-border-sm" role="status"></div> <span class="ms-2">Loading icons…</span></div>';
+  resultsContainer.classList.remove("d-none");
+
+  try {
+    const index = await loadIconIndex();
+    const matches = searchIcons(query, 50);
+
+    if (matches.length === 0) {
+      resultsContainer.innerHTML = '<div class="icon-search-empty">No icons found for "' + esc(query) + '"</div>';
+      return;
+    }
+
+    const currentValue = hiddenInput.value || "";
+    const isBootstrapIcon = currentValue.startsWith("bi-");
+
+    let html = "";
+    for (const icon of matches) {
+      const slug = icon.slug;
+      const isSelected = (hiddenInput.value === slug) || (iconSearchSelectedSlug === slug);
+      html += `
+        <div class="icon-search-result${isSelected ? " selected" : ""}" data-slug="${esc(slug)}" role="button" tabindex="0" aria-label="Select ${esc(icon.name)}" aria-pressed="${isSelected}">
+          <img src="${esc(getIconSvgUrl(slug))}" alt="" class="icon-search-thumb" loading="lazy">
+          <div class="icon-name">${esc(icon.name)}</div>
+          <div class="icon-slug">${esc(slug)}</div>
+        </div>`;
+    }
+    resultsContainer.innerHTML = html;
+
+    // Attach click/keyboard handlers to results
+    resultsContainer.querySelectorAll(".icon-search-result").forEach(el => {
+      el.addEventListener("click", () => selectIcon(el, hiddenInput, resultsContainer));
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          selectIcon(el, hiddenInput, resultsContainer);
+        }
+      });
+    });
+  } catch (e) {
+    resultsContainer.innerHTML = '<div class="icon-search-empty text-danger">Failed to load icons: ' + esc(e.message) + '</div>';
+  }
+}
+
+function selectIcon(el, hiddenInput, resultsContainer) {
+  const slug = el.dataset.slug;
+  hiddenInput.value = slug;
+  iconSearchSelectedSlug = slug;
+  // Update search field to show the selected slug
+  const searchInput = $("#app-config-icon-search");
+  if (searchInput) searchInput.value = slug;
+  // Close results panel
+  resultsContainer.classList.add("d-none");
+  resultsContainer.innerHTML = "";
+}
+
+/* Infer a likely web URL from a container's published ports.
+   Returns a URL string like "http://hostname:port" or "https://hostname:port",
+   or null if no suitable port can be determined. */
+function inferContainerUrl(container) {
+  const ports = container.ports || {};
+  const hostname = location.hostname;
+  for (const [cport, bindings] of Object.entries(ports)) {
+    if (!bindings || !bindings.length) continue;
+    const proto = (cport.split("/")[1] || "tcp").toLowerCase();
+    if (proto !== "tcp") continue;
+    for (const b of bindings) {
+      if (!b.HostPort) continue;
+      const hostPort = b.HostPort;
+      const isHttps = ["443", "8443"].includes(hostPort) ||
+                      cport.split("/")[0] === "443";
+      return `${isHttps ? "https" : "http"}://${hostname}:${hostPort}`;
+    }
+  }
+  return null;
 }
 
 function openLogs(id, name) {
@@ -1474,6 +1887,12 @@ function restartPolling() {
 }
 
 wireLogin();
-loadSystem().then(() => $("#set-poll").value = Math.round(state.pollInterval / 1000));
+setupIconSearch();
+setupGroupAutocomplete();
+loadSystem().then(() => {
+  $("#set-poll").value = Math.round(state.pollInterval / 1000);
+  // Pre-load icon index in background for automatic matching (non-blocking)
+  loadIconIndex().catch(() => {});
+});
 refreshPage();
 restartPolling();

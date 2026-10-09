@@ -273,26 +273,35 @@ Notes:
 ```
 frontend/static/
 ├── index.html    single page, 7 sections, 3 modals
-├── app.js        all application logic (1036 lines)
-├── style.css     theme + component styles (158 lines)
+├── app.js        all application logic (1694 lines)
+├── style.css     theme + component styles (278 lines)
 ├── logo-2.svg    app logo (navbar + favicon)
 ├── logo-1.png    alternate logo
 └── aomame-lab-1.png  footer logo
 ```
 
-### 4.1 `state` object (`app.js:4-17`)
+### 4.1 `state` object (`app.js:4-22`)
 
 ```js
 state = {
-  containers, pollInterval=5000, page="dashboard",
-  search, filter="all", sort="name", pageSize=10, currentPage=1,
-  images, imagesSearch, imagesSort, imagesPageSize, imagesCurrentPage,
-  volumes, volumesSearch, volumesSort, volumesPageSize, volumesCurrentPage,
-  networks, networksSearch, networksSort, networksPageSize, networksCurrentPage,
-  selected: Set(), restoreFile, restoreBuffer,
-  logSocket, logContainer, pendingConfirm,
+  containers, pollInterval: 5000, page: "dashboard",
+  search: "", filter: "all", sort: "name",
+  pageSize: 10, currentPage: 1,
+  images: [], imagesSearch: "", imagesSort: "repo",
+  imagesPageSize: 10, imagesCurrentPage: 1,
+  volumes: [], volumesSearch: "", volumesSort: "name",
+  volumesPageSize: 10, volumesCurrentPage: 1,
+  networks: [], networksSearch: "", networksSort: "name",
+  networksPageSize: 10, networksCurrentPage: 1,
+  selected: Set(), restoreFile: null, restoreBuffer: null,
+  logSocket: null, logContainer: null, pendingConfirm: null,
   containersInitialLoadComplete: false,
-}
+  // Frontend-only application tile configuration (not persisted)
+  appConfig: {},
+  // selfh.st icon index cache
+  iconIndex: null,
+  iconIndexPromise: null,
+};
 ```
 
 `state.settings` is assigned in `loadSystem()` but is **not** declared in the
@@ -304,7 +313,7 @@ object literal.
 |---|---|---|
 | `loadSystem()` | navbar, footer, `#settings-list`, `#set-poll` | Called on every `refreshPage()` **and** at startup |
 | `loadContainers()` | `state.containers` | Called by Dashboard *and* Containers |
-| `renderSummary()` | `#summary-cards`, `#dashboard-list`, dashboard pagination | **Dashboard renderer** |
+| `renderSummary()` | `#summary-cards`, `#system-resources`, `#dashboard-apps`, dashboard pagination | **Dashboard renderer** (summary cards + application cards) |
 | `renderContainers()` | `#container-tbody`, `#container-cards`, pagination | **Containers renderer** |
 | `loadImages()` / `renderImages()` | `#images-tbody` | |
 | `loadVolumes()` / `renderVolumes()` | `#volumes-tbody` | |
@@ -313,14 +322,16 @@ object literal.
 | `renderRestorePreview(...)` | `#restore-preview` | Shared by upload + stored backup paths |
 | `openDetails(id,name)` | `#details-modal` | |
 | `openLogs(id,name)` / `renderLogs` / `loadLogText` | `#logs-modal` | |
-| `showDashboardLoading(show)` | `#dashboard-list` | Spinner only |
+| `showDashboardLoading(show)` | `#dashboard-apps` | Spinner only |
+| `renderSystemResources()` | `#system-resources` | System resources cards (Dashboard only) |
+| `renderDashboardPagination()` | `#dashboard-pagination` | Dashboard pagination controls |
 
 ### 4.3 Loading / progress states
 
 Two distinct mechanisms:
 
 1. **Per-area spinner** — `showDashboardLoading(true)` renders a spinner row
-   into `#dashboard-list`. Controlled by `state.containersInitialLoadComplete`:
+   into `#dashboard-apps`. Controlled by `state.containersInitialLoadComplete`:
    it shows only on the **first** Dashboard load of the session
    (`app.js:235-239, 246, 262-264`).
 2. **Global non-blocking indicator** — `showLoading(msg)` / `hideLoading()` /
@@ -346,7 +357,7 @@ There is **no** deep-linking, no URL hash routing, no scroll restoration.
 
 ### 4.5 Polling
 
-`app.js:1026-1032`:
+`app.js:1860-1867`:
 
 ```js
 let pollTimer = null;
@@ -365,8 +376,6 @@ function restartPolling() {
 - `state.pollInterval` is initialised to the hard-coded `5000`, *not* from
   `settings.poll_interval`; it is only overwritten by the About page input
   `#set-poll` (`app.js:1021-1023`). Changing it restarts the timer.
-- `restartPolling()` is not called again on page navigation, and the interval
-  is not paused when the tab is hidden.
 
 ### 4.6 Search / filter / sort / pagination
 
@@ -521,10 +530,13 @@ Status is verified against the code cited, not against `README.md` claims.
 | 48 | About / System information | **Implemented** | `#page-about`; app name, backup dir, max upload, default log lines, auth status; polling interval editable 2–60s |
 | 49 | Footer version + live engine info | **Implemented** | `V.{app_version}`, `Docker {version} · API {api} · {os}` — only refreshed on `loadSystem()` |
 | 50 | Engine connection badge | **Implemented** | `#engine-status` ok/err |
-| 51 | Dashboard application cards | **Implemented** | `#page-dashboard`; `renderSummary()` `app.js:588-660`; cards with name, status, icon, image |
-| 52 | Dashboard application configuration | **Implemented** | Edit modal (`#app-config-modal`), persist to `BACKUP_DIR/dashboard-apps.json`; fields: name, URL, description, icon, group, order |
+| 51 | Dashboard application cards | **Implemented** | `#page-dashboard`; `renderSummary()` `app.js:785-860`; cards with name, status, icon, image; clickable name when URL available |
+| 52 | Dashboard application configuration | **Implemented** | Edit modal (`#app-config-modal`), persist to `BACKUP_DIR/dashboard-apps.json`; fields: display name (defaults to container name), URL, description, icon, group, order |
 | 53 | Dashboard application persistence | **Implemented** | Server-side JSON (`BACKUP_DIR/dashboard-apps.json`); survives browser refresh & restart; atomic writes; `model_dump(mode="json")` for HttpUrl serialization |
 | 54 | Dashboard application API | **Implemented** | `GET/POST/PUT/DELETE /api/dashboard/apps`; authenticated; `appId` = container name (stable) |
+| 55 | Inferred container URLs | **Implemented** | `getEffectiveUrl()` `app.js:104-109` returns saved URL > inferred URL > null; `inferContainerUrl()` `app.js:1483-1499` derives HTTP(S) URL from published TCP ports; card name clickable immediately without modal save; inferred URLs never persisted |
+| 56 | Selfh.st icon search & automatic matching | **Implemented** | `loadIconIndex()` `app.js:51-78` fetches from jsDelivr CDN; cached in memory; `searchIcons()` `app.js:80-90`; `renderAppIcon()` `app.js:33-58` priority: explicit icon > auto-match > fallback; `findAutoIconMatch()` `app.js:115-138` exact normalized match on slug/name, then token-based unambiguous match; network/index failure never blocks Dashboard; fallback `/static/logo-2.svg` |
+| 57 | Group autocomplete | **Implemented** | `setupGroupAutocomplete()` `app.js:1623-1728`; suggestions from `state.appConfig`; case-insensitive dedup; prefix matches before substring; Arrow Up/Down/Enter/Escape; click selects exact group; users may type new group; empty group / "Other" preserved |
 | 55 | Footer version + live engine info | **Implemented** | `V.{app_version}`, `Docker {version} · API {api} · {os}` — only refreshed on `loadSystem()` |
 | 56 | Engine connection badge | **Implemented** | `#engine-status` ok/err |
 | 51 | Frontend asset cache busting | **Implemented** | `?v={{APP_VERSION}}` on `app.js` + `style.css`; `index.html` read per request |
@@ -545,21 +557,19 @@ Status is verified against the code cited, not against `README.md` claims.
 ## 7. Current Dashboard Behaviour
 
 This section is a precise description of the Dashboard **as it exists today**.
-It is the reference point for the planned redesign.
 
 ### 7.1 Layout (DOM order in `#page-dashboard`)
 
 1. `<div class="row g-3" id="summary-cards">` — populated by `renderSummary()`.
-2. `<h6 class="mt-4 mb-2 text-muted">Containers overview</h6>` — static label.
-3. Toolbar `<div class="d-flex flex-wrap gap-2 mb-3 align-items-center">`:
+2. `<div class="row g-3 mt-4" id="system-resources">` — Docker Engine / resource summary cards.
+3. `<h6 class="mt-4 mb-2 text-muted">Applications</h6>` — static label.
+4. Toolbar `<div class="d-flex flex-wrap gap-2 mb-3 align-items-center">`:
    - `#dashboard-search` (`form-control-sm`, max-width 300px)
    - `#dashboard-filter-state` — `all | running | exited | stopped | restarting | paused`
    - `#dashboard-sort-by` — `name | state | cpu | mem | created`
    - `#dashboard-page-size` — `10 | 25 | 50 | all` (default 10)
-4. `<div id="dashboard-list">` — the overview table container.
-5. `<nav id="dashboard-pagination">` — `#dashboard-pagination-info`,
-   `#btn-dashboard-page-prev`, `#dashboard-page-indicator`,
-   `#btn-dashboard-page-next`.
+5. `<div class="row g-3" id="dashboard-apps">` — application card grid (grouped).
+6. `<nav id="dashboard-pagination">` — pagination info, prev/next, page indicator.
 
 ### 7.2 Summary cards
 
@@ -578,82 +588,90 @@ elements in a `.row.g-3`, each `col-6 col-md-4 col-lg-2`:
 There are **no** charts, sparklines, history, host metrics, images/volumes/
 networks counts, error counts, or uptime aggregates on the Dashboard.
 
-### 7.3 Containers overview table
+### 7.3 Application cards (grouped, paginated)
 
-Rendered inline by `renderSummary()` `app.js:387-398`. One `<table>` inside a
-`.card.dm-card` with `.table-responsive`. There is **no `<thead>`** — the table
-is headerless. Five columns per row:
+Rendered by `renderSummary()` `app.js:785-860`. Cards are grouped by the
+`group` field from `state.appConfig` (empty group → "Other"). Within each
+group, cards are sorted by `order` then name. The flat list is paginated
+via `containersPagination` (shared with Containers page).
 
-| Cell | Content |
-|---|---|
-| 1 | `bi bi-box-seam` accent icon + `<b>{name}</b>` |
-| 2 | `{image}`, `text-muted` |
-| 3 | `badge(x.state)` |
-| 4 | `{stats.cpu_percent ?? "–"}%`, `text-muted` |
-| 5 | `fmtBytes(stats.mem_usage)`, `text-muted` |
+Each card (`app-card`) shows:
 
-Rows are `containersPagination.getPaginatedList(filteredContainers())` with
-`adjustPage()` clamping applied before slicing.
+- **Icon**: via `renderAppIcon(cfg.icon, containerName)` `app.js:33-58`.
+  Priority: explicit saved icon (Bootstrap `bi-*` or selfh.st slug) →
+  automatic selfh.st match (exact normalized slug/name, then token-based
+  unambiguous match) → `/static/logo-2.svg` fallback.
+- **Name**: `cfg.name` (saved display name) or container name. If a URL is
+  available (saved or inferred), the name is an `<a>` link opening in a new
+  tab; otherwise plain text.
+- **Status badge + indicator dot**: `badge(x.state)` + colored dot.
+- **Description**: `cfg.description` if set.
+- **Image name**: `x.image` in muted small text.
+- **Edit button** (hover/focus): opens `#app-config-modal` for that container.
 
-Critically: **the Dashboard overview rows contain no links and no controls.**
-No details link, no logs button, no start/stop/restart, no remove, no checkbox.
-The Dashboard is read-only today.
+### 7.4 URL behaviour (clickable names)
 
-### 7.4 Metrics source
+`getEffectiveUrl(appName, container)` `app.js:104-109` returns the effective
+URL with priority:
 
-Both cards and rows read from the **same** `GET /api/containers` response.
-There is no second metrics request, no `/stats` call, and no separate system
-metrics request from the Dashboard.
+1. **Saved URL** (`cfg.url`) — highest priority.
+2. **Inferred URL** from `inferContainerUrl(container)` `app.js:1483-1499`:
+   scans `container.ports` for published TCP ports, returns
+   `http(s)://hostname:hostPort` (https for 443/8443). Uses `location.hostname`,
+   never assumes `localhost`.
+3. **Null** — no link rendered.
 
-### 7.5 Polling
+**Inferred URLs make the card name clickable immediately on Dashboard load
+without opening or saving the modal.** Inferred URLs are **never persisted**;
+only an explicit save writes `cfg.url`.
 
-- The shared timer calls `loadContainers()` while `state.page` is `dashboard`
-  or `containers` (`app.js:1029-1031`).
-- Interval is `state.pollInterval`, default **5000 ms**, not taken from the
-  backend `poll_interval` setting.
-- Every tick re-fetches the full container list **including per-container
-  stats**, i.e. one `stats(stream=False)` call per running container, fanned
-  out over at most 8 threads server-side. On a host with many containers this
-  is the dominant cost of the application.
+### 7.5 System Resources cards
+
+`renderSystemResources()` `app.js:883-916` shows four cards:
+- Docker Engine (app name, version, poll interval)
+- CPU (containers): aggregate CPU % with progress bar (clamped to 100%)
+- Memory (containers): aggregate memory usage + running count
+- Resources: image/volume/network counts + total containers
+
+### 7.6 Polling
+
+- Shared timer calls `loadContainers()` on Dashboard or Containers page
+  (`app.js:1877-1886`).
+- Interval `state.pollInterval`, default **5000 ms** (not from backend
+  `poll_interval`; About page `#set-poll` overrides).
+- Every tick re-fetches full container list including per-container stats
+  (one `stats(stream=False)` per running container, fanned over ≤8 threads).
 - Poll does **not** call `/api/system`.
-- `loadContainers()` calls `containersPagination.resetPage()` on **every** poll
-  (`app.js:252`). With >10 containers, any filter/sort/search change combined
-  with a poll tick snaps the user back to page 1.
 
-### 7.6 Loading behaviour
+### 7.7 Loading behaviour
 
-`showDashboardLoading(true)` `app.js:446-463` renders a spinner row into
-`#dashboard-list` and hides `#dashboard-pagination-controls`. It is invoked
-only when `state.page === "dashboard" && !state.containersInitialLoadComplete`
-(`app.js:236-239`). Once `containersInitialLoadComplete` is set to `true`
-(after the first successful load) it is never shown again for the session.
+`showDashboardLoading(true)` `app.js:874-890` renders a spinner in
+`#dashboard-apps` and hides pagination controls. Shown only on first
+Dashboard load of the session (`state.containersInitialLoadComplete`).
+Summary cards have no loading state. API errors on Dashboard are visible
+in `#dashboard-apps`.
 
-The summary cards (`#summary-cards`) have **no** loading state — they stay
-empty until the first response arrives. On an API error the error message is
-rendered into `#container-tbody` (a Containers-page element that is hidden
-while on the Dashboard), so **a Dashboard fetch failure shows no visible error
-at all** — only the stale/empty cards. This is a real, observable defect.
-
-### 7.7 API endpoints used by the Dashboard
+### 7.8 API endpoints used by the Dashboard
 
 | Endpoint | When | Used for |
 |---|---|---|
 | `GET /api/system` | every `refreshPage()` | navbar engine badge, footer, `#settings-list`, `#set-poll` |
-| `GET /api/containers` | page load, every poll tick, `#btn-refresh` | cards + overview table |
+| `GET /api/containers` | page load, every poll tick, `#btn-refresh` | summary cards + application cards |
+| `GET /api/images` | Dashboard load | image count for System Resources |
+| `GET /api/volumes` | Dashboard load | volume count for System Resources |
+| `GET /api/networks` | Dashboard load | network count for System Resources |
 
-No other endpoint is called by the Dashboard.
-
-### 7.8 State coupling with the Containers page
+### 7.9 State coupling with the Containers page
 
 Because both pages read `state.containers` and `containersPagination`
 (shared `search`/`filter`/`sort`/`pageSize`/`currentPage`):
 
-- Search typed on the Dashboard changes what the Containers page shows, and
-  vice versa. Neither input mirrors the other's current value.
+- Search typed on the Dashboard changes what the Containers page shows,
+  and vice versa. Neither input mirrors the other's current value.
 - Filter, sort and page size are shared in the same way.
 - `loadContainers()` renders only the active page
-  (`app.js:253-258`), so the inactive page's DOM is stale until it is shown —
-  and `refreshPage()` always re-fetches on tab switch, so this self-corrects.
+  (`app.js:1377-1382`), so the inactive page's DOM is stale until shown —
+  `refreshPage()` always re-fetches on tab switch, so this self-corrects.
 
 ---
 
@@ -1142,9 +1160,9 @@ None of the above may be resolved by guessing. Ask first.
 | `backend/app/routers/containers.py` | 149 | Container routes + log stream WS |
 | `backend/app/routers/resources.py` | 87 | `/api/system`, images, volumes, networks |
 | `backend/app/routers/backups.py` | 112 | Backups + restore preview/run |
-| `frontend/static/index.html` | 368 | Single page, 7 sections, 3 modals |
-| `frontend/static/app.js` | 1036 | All frontend logic |
-| `frontend/static/style.css` | 158 | Theme + components |
+| `frontend/static/index.html` | 455 | Single page, 7 sections, 3 modals |
+| `frontend/static/app.js` | 1694 | All frontend logic |
+| `frontend/static/style.css` | 278 | Theme + components |
 | `tests/conftest.py` | 67 | Mock Docker fixtures |
 | `tests/test_api.py` | 62 | 11 API tests |
 | `tests/test_backup.py` | 102 | 10 backup validation tests |

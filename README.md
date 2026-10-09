@@ -62,7 +62,8 @@ Current version: **V.1.0.0**
 - **Automatic container discovery** — all containers on the local Engine
   appear automatically; no registration needed (polling with live UI updates)
 - **Dashboard** — total/running/stopped/restarting counts, aggregate CPU &
-  RAM usage, per-container resource overview
+  RAM usage, per-container resource overview, and **application cards** for
+  each discovered container with clickable names, status badges, and icons
 - **Container actions** — start / stop / restart / pause / unpause / kill /
   remove (with confirmation modals)
 - **Container details** — config, environment (masked sensitive values +
@@ -172,6 +173,28 @@ ports are displayed but not clickable.
   the toggle or switching containers terminates the stream — no connection
   leaks.
 - **Auto scroll** follows new lines and can be paused independently.
+
+## Dashboard Application Configuration
+
+Each discovered container gets an application card on the Dashboard. Click the
+pencil icon on a card to configure:
+
+- **Display Name** — defaults to the container name; editable.
+- **URL** — if set, the card name becomes a link. If left empty, a URL is
+  **automatically inferred** from the container's published TCP ports
+  (e.g. `http://host:8080`). Saved URLs take priority over inferred ones.
+  Inferred URLs are never persisted.
+- **Description** — optional text shown on the card.
+- **Icon** — search and select from [selfh.st](https://selfh.st/icons/) icons.
+  If no icon is selected, one is **automatically matched** from the container
+  name (e.g. `grafana` → Grafana icon). Falls back to the default logo.
+- **Group** — optional logical group for organizing cards. Type to see
+  suggestions from existing groups (case-insensitive, prefix matches first).
+  Users may still enter a new group name.
+- **Order** — display order within the group (lower numbers first).
+
+Configuration is saved to `BACKUP_DIR/dashboard-apps.json` on the server and
+survives browser refresh and container restarts.
 
 ## Images
 
