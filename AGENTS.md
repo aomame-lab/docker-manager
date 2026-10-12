@@ -319,7 +319,7 @@ object literal.
 |---|---|---|
 | `loadSystem()` | navbar, footer, `#settings-list`, `#set-poll` | Called on every `refreshPage()` **and** at startup |
 | `loadContainers()` | `state.containers` | Called by Dashboard *and* Containers |
-| `renderSummary()` | `#summary-cards`, `#system-resources`, `#dashboard-apps`, dashboard pagination | **Dashboard renderer** (summary cards + application cards) |
+| `renderSummary()` | `#summary-cards`, `#dashboard-apps`, dashboard pagination | **Dashboard renderer** (summary cards + application cards) |
 | `renderContainers()` | `#container-tbody`, `#container-cards`, pagination | **Containers renderer** |
 | `loadImages()` / `renderImages()` | `#images-tbody` | |
 | `loadVolumes()` / `renderVolumes()` | `#volumes-tbody` | |
@@ -329,7 +329,6 @@ object literal.
 | `openDetails(id,name)` | `#details-modal` | |
 | `openLogs(id,name)` / `renderLogs` / `loadLogText` | `#logs-modal` | |
 | `showDashboardLoading(show)` | `#dashboard-apps` | Spinner only |
-| `renderSystemResources()` | `#system-resources` | System resources cards (Dashboard only) |
 | `renderDashboardPagination()` | `#dashboard-pagination` | Dashboard pagination controls |
 
 ### 4.3 Loading / progress states
@@ -571,33 +570,40 @@ This section is a precise description of the Dashboard **as it exists today**.
 
 ### 7.1 Layout (DOM order in `#page-dashboard`)
 
-1. `<div class="row g-3" id="summary-cards">` — populated by `renderSummary()`.
-2. `<div class="row g-3 mt-4" id="system-resources">` — Docker Engine / resource summary cards.
-3. `<h6 class="mt-4 mb-2 text-muted">Applications</h6>` — static label.
-4. Toolbar `<div class="d-flex flex-wrap gap-2 mb-3 align-items-center">`:
+1. `<div class="row g-3" id="summary-cards">` — populated by `renderSummary()` (3-row metrics layout).
+2. `<h6 class="mt-4 mb-2 text-muted">Applications</h6>` — static label.
+3. Toolbar `<div class="d-flex flex-wrap gap-2 mb-3 align-items-center">`:
    - `#dashboard-search` (`form-control-sm`, max-width 300px)
    - `#dashboard-filter-state` — `all | running | exited | stopped | restarting | paused`
    - `#dashboard-sort-by` — `name | state | cpu | mem | created`
    - `#dashboard-page-size` — `10 | 25 | 50 | all` (default 10)
-5. `<div class="row g-3" id="dashboard-apps">` — application card grid (grouped).
-6. `<nav id="dashboard-pagination">` — pagination info, prev/next, page indicator.
+4. `<div class="row g-3" id="dashboard-apps">` — application card grid (grouped).
+5. `<nav id="dashboard-pagination">` — pagination info, prev/next, page indicator.
 
-### 7.2 Summary cards
+### 7.2 Summary cards (3-row layout)
 
-`renderSummary()` `app.js:370-385`. Exactly **six** `.dm-card.stat-card`
-elements in a `.row.g-3`, each `col-6 col-md-4 col-lg-2`:
+`renderSummary()` `app.js:1245-1353`. Three rows of `.dm-card.stat-card` elements in `.row.g-2`:
 
+**Row 1 — Container counters** (4 cards, `col-lg-3` each):
 | Label | Value | Icon | Source |
 |---|---|---|---|
 | Total | `state.containers.length` | `boxes` | all states |
 | Running | count `state === "running"` | `play-circle` | |
 | Stopped | count `["exited","created","dead"]` | `stop-circle` | |
 | Restarting | count `state === "restarting"` | `arrow-repeat` | |
-| CPU | `sum(cpu_percent)` of running + `"%"`, 1 decimal | `cpu` | unnormalised sum — **not** divided by host CPU count, so it can exceed 100% |
-| Memory | `sum(mem_usage)` of running, `fmtBytes` | `memory` | no percentage, no host total, no limit |
 
-There are **no** charts, sparklines, history, host metrics, images/volumes/
-networks counts, error counts, or uptime aggregates on the Dashboard.
+**Row 2 — Container aggregate metrics** (6 cards, `col-lg-2` each):
+| Label | Value | Icon | Source |
+|---|---|---|---|
+| CPU | `sum(cpu_percent)` of running + `"%"`, 1 decimal | `cpu` | unnormalised sum, can exceed 100% |
+| Memory | gauge (used/limit %), `fmtBytes` | `memory` | gauge + detail |
+**Row 2 — Container aggregate metrics** (2 gauge cards, `col-lg-6` each):
+| Label | Value | Source |
+|---|---|---|
+| CPU | gauge (%) | sum of container `cpu_percent` |
+| Memory | gauge (used/limit %) | sum of container `mem_usage` / `mem_limit` |
+
+Row 2 shows only CPU and Memory gauges. The gauge arcs visually represent the aggregate container CPU percentage (unnormalized, can exceed 100%) and aggregate memory usage percentage (used/limit). No numerical values are displayed inside the gauges; the arcs and colors provide the visual indication.
 
 ### 7.3 Application cards (grouped, paginated)
 
@@ -640,14 +646,6 @@ URL with priority:
 without opening or saving the modal.** Inferred URLs are **never persisted**;
 only an explicit save writes `cfg.url`. **Manual apps never receive inferred URLs.**
 
-### 7.5 System Resources cards
-
-`renderSystemResources()` `app.js:883-916` shows four cards:
-- Docker Engine (app name, version, poll interval)
-- CPU (containers): aggregate CPU % with progress bar (clamped to 100%)
-- Memory (containers): aggregate memory usage + running count
-- Resources: image/volume/network counts + total containers
-
 ### 7.6 Polling
 
 - Shared timer calls `loadContainers()` on Dashboard or Containers page
@@ -672,9 +670,6 @@ in `#dashboard-apps`.
 |---|---|---|
 | `GET /api/system` | every `refreshPage()` | navbar engine badge, footer, `#settings-list`, `#set-poll` |
 | `GET /api/containers` | page load, every poll tick, `#btn-refresh` | summary cards + application cards |
-| `GET /api/images` | Dashboard load | image count for System Resources |
-| `GET /api/volumes` | Dashboard load | volume count for System Resources |
-| `GET /api/networks` | Dashboard load | network count for System Resources |
 
 ### 7.9 Tile deletion from Dashboard
 

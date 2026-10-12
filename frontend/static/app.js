@@ -308,8 +308,41 @@ const fmtUptime = (started) => {
    this. Docker-supplied metadata — container/image/volume/network names,
    labels, env values, ports, filenames — is attacker-influenced whenever a
    user can create containers, so it is never trusted as markup. */
-const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;" };
+const ESC_MAP = { "&": "&", "<": "<", ">": ">", '"': "&", "'": "'", "`": "&#96;" };
 const esc = s => String(s ?? "").replace(/[&<>"'`]/g, c => ESC_MAP[c]);
+
+/* ---------------------------------------------------------------- progress bar utilities */
+/* Horizontal progress bars for CPU/Memory */
+
+/* CPU and Memory thresholds */
+const CPU_THRESHOLDS = { green: 70, amber: 85 };
+const MEM_THRESHOLDS = { green: 75, amber: 90 };
+
+/* Get color class for CPU percentage */
+const cpuColorClass = pct => {
+  if (pct >= CPU_THRESHOLDS.amber) return "progress-red";
+  if (pct >= CPU_THRESHOLDS.green) return "progress-amber";
+  return "progress-green";
+};
+
+/* Get color class for memory percentage */
+const memColorClass = pct => {
+  if (pct >= MEM_THRESHOLDS.amber) return "progress-red";
+  if (pct >= MEM_THRESHOLDS.green) return "progress-amber";
+  return "progress-green";
+};
+
+/* Format bytes for display (no decimals for whole numbers) */
+function fmtBytesCompact(bytes) {
+  if (!bytes && bytes !== 0) return "N/A";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (bytes >= 1024 && i < units.length - 1) {
+    bytes /= 1024;
+    i++;
+  }
+  return i === 0 ? `${bytes} ${units[i]}` : `${bytes.toFixed(bytes < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+}
 
 /* ---------------------------------------------------------------- pagination helper */
 class Pagination {
@@ -394,33 +427,21 @@ const imagesPagination = new Pagination("images");
 const volumesPagination = new Pagination("volumes");
 const networksPagination = new Pagination("networks");
 
-/* CPU and Memory threshold constants */
-const CPU_THRESHOLDS = { green: 70, amber: 85 };
-const MEM_THRESHOLDS = { green: 75, amber: 90 };
-
-/* Get color class for CPU percentage */
-const cpuColorClass = pct => {
+/* Get color class for CPU percentage (for container stat tiles) */
+const statCpuColorClass = pct => {
   if (pct === undefined || pct === null) return "stat-muted";
   if (pct >= CPU_THRESHOLDS.amber) return "stat-red";
   if (pct >= CPU_THRESHOLDS.green) return "stat-amber";
   return "stat-green";
 };
 
-/* Get color class for memory percentage */
-const memColorClass = (used, limit) => {
+/* Get color class for memory percentage (for container stat tiles) */
+const statMemColorClass = (used, limit) => {
   if (!limit || limit <= 0 || used === undefined || used === null) return "stat-muted";
   const pct = (used / limit) * 100;
   if (pct >= MEM_THRESHOLDS.amber) return "stat-red";
   if (pct >= MEM_THRESHOLDS.green) return "stat-amber";
   return "stat-green";
-};
-
-/* Format bytes compact for stats display */
-const fmtBytesCompact = b => {
-  if (!b && b !== 0) return "–";
-  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
-  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
-  return (i === 0 ? b : b.toFixed(1)) + " " + u[i];
 };
 
 /* Format CPU percentage for display */
@@ -447,7 +468,7 @@ function renderCpuStats(stats) {
     return `<span class="stat-inline stat-muted"><i class="bi bi-cpu"></i> –</span>`;
   }
   const pct = stats.cpu_percent;
-  const colorClass = cpuColorClass(pct);
+  const colorClass = statCpuColorClass(pct);
   return `<span class="stat-inline ${colorClass}"><i class="bi bi-cpu"></i> ${fmtCpuPct(pct)}</span>`;
 }
 
@@ -458,7 +479,7 @@ function renderMemStats(stats) {
   }
   const used = stats.mem_usage || 0;
   const limit = stats.mem_limit || 0;
-  const colorClass = memColorClass(used, stats.mem_limit);
+  const colorClass = statMemColorClass(used, stats.mem_limit);
   return `<span class="stat-inline ${colorClass}"><i class="bi bi-memory"></i> ${fmtMemUsage(used)}</span>`;
 }
 
@@ -851,23 +872,6 @@ async function loadSystem() {
   if (state.page === "dashboard") {
     await loadAppConfig();
   }
-
-  // Load resource counts for System Resources section (Dashboard only)
-  if (state.page === "dashboard") {
-    try {
-      const [imgs, vols, nets] = await Promise.all([
-        api("/api/images"),
-        api("/api/volumes"),
-        api("/api/networks"),
-      ]);
-      state.dashboardResources = {
-        images: imgs.length,
-        volumes: vols.length,
-        networks: nets.length,
-      };
-      renderSystemResources();
-    } catch (e) { /* ignore */ }
-  }
 }
 
 /* Load persisted application configurations from the API. */
@@ -1158,16 +1162,45 @@ function renderSummary() {
   const running = c.filter(x => x.state === "running");
   const cpu = running.reduce((s, x) => s + (x.stats?.cpu_percent || 0), 0);
   const mem = running.reduce((s, x) => s + (x.stats?.mem_usage || 0), 0);
-  const cards = [
-    ["Total", c.length, "boxes"], ["Running", running.length, "play-circle"],
-    ["Stopped", cnt(x => ["exited", "created", "dead"].includes(x.state)), "stop-circle"],
-    ["Restarting", cnt(x => x.state === "restarting"), "arrow-repeat"],
-    ["CPU", cpu.toFixed(1) + "%", "cpu"], ["Memory", fmtBytes(mem), "memory"],
+  const memLimit = running.reduce((s, x) => s + (x.stats?.mem_limit || 0), 0);
+
+  // Calculate percentages for CPU and Memory
+  const cpuPct = Math.min(100, Math.max(0, Number(cpu) || 0));
+  const memPct = memLimit > 0 ? Math.min(100, Math.max(0, (mem / memLimit) * 100)) : 0;
+
+  // All 6 tiles with unified data structure
+  const allTiles = [
+    { type: "counter", label: "Total", value: c.length, icon: "boxes", colorClass: "" },
+    { type: "counter", label: "Running", value: running.length, icon: "play-circle", colorClass: "" },
+    { type: "counter", label: "Stopped", value: cnt(x => ["exited", "created", "dead"].includes(x.state)), icon: "stop-circle", colorClass: "" },
+    { type: "counter", label: "Restarting", value: cnt(x => x.state === "restarting"), icon: "arrow-repeat", colorClass: "" },
+    { type: "progress", label: "CPU", value: cpuPct.toFixed(1) + "%", icon: "cpu-fill", pct: cpuPct, thresholds: CPU_THRESHOLDS, unit: "%" },
+    { type: "progress", label: "Memory", value: memLimit > 0 ? memPct.toFixed(1) + "%" : "N/D", icon: "memory", pct: memPct, thresholds: MEM_THRESHOLDS, unit: "", hasLimit: memLimit > 0, pctStr: memLimit > 0 ? memPct.toFixed(1) + "%" : "N/A" },
   ];
-  $("#summary-cards").innerHTML = cards.map(([l, v, i]) => `
-    <div class="col-6 col-md-4 col-lg-2"><div class="dm-card stat-card">
-      <div class="value"><i class="bi bi-${esc(i)} text-accent"></i> ${esc(v)}</div>
-      <div class="label">${esc(l)}</div></div></div>`).join("");
+
+  $("#summary-cards").innerHTML = `
+    <div class="row g-1 summary-row stats-row">
+      ${allTiles.map(t => `
+        <div class="col-6 col-md-4 col-lg-2"><div class="dm-card stat-card stat-tile">
+          <div class="stat-tile-content">
+            <div class="stat-tile-main">
+              <i class="bi bi-${t.icon} text-accent"></i>
+              <div class="stat-tile-text">
+                <div class="stat-tile-label">${esc(t.label)}</div>
+                <div class="stat-tile-value ${t.colorClass || (t.type === "progress" ? (t.pct >= t.thresholds.amber ? "progress-red" : t.pct >= t.thresholds.green ? "progress-amber" : "progress-green") : "")}">${esc(t.value)}</div>
+                ${t.type === "progress" && t.pctStr && t.label !== "Memory"
+  ? `<div class="stat-tile-pct ${t.pct >= t.thresholds.amber ? "progress-red" : t.pct >= t.thresholds.green ? "progress-amber" : "progress-green"}">${esc(t.pctStr)}</div>`
+  : ""}
+              </div>
+            </div>
+            ${t.type === "progress" ? `
+              <div class="stat-tile-bar-wrap" role="progressbar" aria-valuenow="${t.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(t.label + " " + t.pct.toFixed(1) + "%")}">
+                <div class="stat-tile-bar ${t.pct >= t.thresholds.amber ? "progress-red" : t.pct >= t.thresholds.green ? "progress-amber" : "progress-green"}" style="height: ${t.pct}%"></div>
+              </div>
+            ` : ""}
+          </div>
+        </div></div>`).join("")}
+    </div>`;
 
   // Dashboard applications — grouped and paginated card grid.
   // Clamp BEFORE slicing so a poll that shrinks the result set lands on the last valid page.
@@ -1471,45 +1504,6 @@ function showDashboardLoading(show) {
     const controls = $("#dashboard-pagination-controls");
     if (controls) controls.classList.add("d-none");
   }
-}
-
-function renderSystemResources() {
-  const res = state.dashboardResources || { images: 0, volumes: 0, networks: 0 };
-  const c = state.containers;
-  const running = c.filter(x => x.state === "running");
-  const cpu = running.reduce((s, x) => s + (x.stats?.cpu_percent || 0), 0);
-  const mem = running.reduce((s, x) => s + (x.stats?.mem_usage || 0), 0);
-  const cpuPct = Math.min(100, Math.round(cpu)); // clamp for progress bar
-
-  // Compute memory percentage if we have host memory info (not available, use container sum)
-  // For now show container memory usage as absolute value
-
-  $("#system-resources").innerHTML = `
-    <div class="col-12 col-md-6 col-lg-3"><div class="dm-card sys-card">
-      <div class="sys-card-label"><i class="bi bi-motherboard text-accent"></i> Docker Engine</div>
-      <div class="sys-card-value">${esc(state.settings?.app_name || "Docker Manager")}</div>
-      <div class="sys-card-subtext text-muted small">
-        v${esc(state.settings?.app_version || "—")} · ${esc(state.settings?.poll_interval || 5)}s poll
-      </div>
-    </div></div>
-    <div class="col-12 col-md-6 col-lg-3"><div class="dm-card sys-card">
-      <div class="sys-card-label"><i class="bi bi-cpu text-accent"></i> CPU (containers)</div>
-      <div class="sys-card-value">${esc(cpu.toFixed(1))}%</div>
-      <div class="progress mt-2" style="height: 6px;">
-        <div class="progress-bar bg-accent" role="progressbar" style="width: ${cpuPct}%" aria-valuenow="${cpuPct}" aria-valuemin="0" aria-valuemax="100"></div>
-      </div>
-    </div></div>
-    <div class="col-12 col-md-6 col-lg-3"><div class="dm-card sys-card">
-      <div class="sys-card-label"><i class="bi bi-memory text-accent"></i> Memory (containers)</div>
-      <div class="sys-card-value">${esc(fmtBytes(mem))}</div>
-      <div class="sys-card-subtext text-muted small">${running.length} running container${running.length !== 1 ? "s" : ""}</div>
-    </div></div>
-    <div class="col-12 col-md-6 col-lg-3"><div class="dm-card sys-card">
-      <div class="sys-card-label"><i class="bi bi-hdd-stack text-accent"></i> Resources</div>
-      <div class="sys-card-value">${res.images} images · ${res.volumes} vols · ${res.networks} nets</div>
-      <div class="sys-card-subtext text-muted small">${c.length} total containers</div>
-    </div></div>
-  `;
 }
 
 function renderDashboardPagination() {
@@ -1991,10 +1985,10 @@ function renderGroupSuggestions(groups, inputEl, suggestionsEl) {
     return;
   }
   suggestionsEl.innerHTML = groups.map((group, idx) => `
-    <div class="group-suggestion${idx === 0 ? " active" : ""}" 
-         data-group="${esc(group)}" 
-         role="option" 
-         tabindex="-1" 
+    <div class="group-suggestion${idx === 0 ? " active" : ""}"
+         data-group="${esc(group)}"
+         role="option"
+         tabindex="-1"
          aria-selected="${idx === 0}">${esc(group)}</div>`).join("");
   suggestionsEl.classList.remove("d-none");
   groupSuggestionsActiveIndex = 0;
