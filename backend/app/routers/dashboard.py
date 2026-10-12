@@ -115,3 +115,70 @@ def delete_dashboard_app(app_id: str):
             delete_app(app_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+class ManualAppHealthResponse(BaseModel):
+    """Response for manual app health check."""
+    appId: str
+    online: bool
+    checkedAt: str
+
+
+@router.get("/apps/{app_id}/health", response_model=ManualAppHealthResponse)
+async def check_manual_app_health(app_id: str):
+    """Check the reachability of a manual application's URL.
+
+    Returns the online/offline status of the manual application.
+    Does not check Docker-backed applications.
+    """
+    from ..dashboard_store import get_app
+    import httpx
+    from datetime import datetime, timezone
+
+    with handle_errors():
+        app = get_app(app_id)
+        if app is None:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        if app.get("type") != "manual":
+            raise HTTPException(status_code=400, detail="Health check only available for manual applications")
+
+        url = app.get("url")
+        if not url:
+            return ManualAppHealthResponse(
+                appId=app_id,
+                online=False,
+                checkedAt=datetime.now(timezone.utc).isoformat()
+            )
+
+        # Validate URL scheme
+        url_str = str(url)
+        if not url_str.startswith(("http://", "https://")):
+            return ManualAppHealthResponse(
+                appId=app_id,
+                online=False,
+                checkedAt=datetime.now(timezone.utc).isoformat()
+            )
+
+        # Perform HTTP reachability check
+        online = False
+        try:
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+                # Use HEAD request for lightweight check, fallback to GET if HEAD not allowed
+                try:
+                    response = await client.head(url_str)
+                except httpx.RequestError:
+                    response = await client.get(url_str)
+                # Consider any HTTP response (including 4xx, 5xx) as online
+                # Only connection errors/timeouts indicate offline
+                online = True
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.RequestError):
+            online = False
+        except Exception:
+            online = False
+
+        return ManualAppHealthResponse(
+            appId=app_id,
+            online=online,
+            checkedAt=datetime.now(timezone.utc).isoformat()
+        )

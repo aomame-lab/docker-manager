@@ -546,6 +546,8 @@ Status is verified against the code cited, not against `README.md` claims.
 | 58 | Group autocomplete | **Implemented** | `setupGroupAutocomplete()` `app.js:1623-1728`; suggestions from `state.appConfig`; case-insensitive dedup; prefix matches before substring; Arrow Up/Down/Enter/Escape; click selects exact group; users may type new group; empty group / "Other" preserved |
 | 59 | Tile deletion from edit modal | **Implemented** | Delete button in `#app-config-modal`; native `confirm()` dialog; calls `DELETE /api/dashboard/apps/{appId}`; on success reloads config, hides modal, re-renders dashboard; never stops/removes underlying Docker container |
 | 60 | Duplicate display-name prevention | **Implemented** | Backend validation in `dashboard_store.py` (`_check_duplicate_display_name`); case-insensitive, trimmed comparison; rejects empty/whitespace; excludes current app on update; applies to both manual and Docker-backed apps |
+| 61 | Persistent UI preferences (localStorage) | **Implemented** | Per-page preferences for search, filter, sort, page size saved to `localStorage` (`dm.ui.prefs.v1`); restored on load/refresh; independent per page (Dashboard, Containers, Images, Volumes, Networks); invalid values fall back to defaults |
+| 62 | Dashboard groups — ungrouped tiles & auto-hide empty | **Implemented** | Tiles without a group render in main area (no "Other" group); groups only shown when non-empty; empty groups hidden automatically (display rule only, definitions persisted) |
 | 61 | Footer version + live engine info | **Implemented** | `V.{app_version}`, `Docker {version} · API {api} · {os}` — only refreshed on `loadSystem()` |
 | 62 | Engine connection badge | **Implemented** | `#engine-status` ok/err |
 | 51 | Frontend asset cache busting | **Implemented** | `?v={{APP_VERSION}}` on `app.js` + `style.css`; `index.html` read per request |
@@ -600,8 +602,7 @@ networks counts, error counts, or uptime aggregates on the Dashboard.
 ### 7.3 Application cards (grouped, paginated)
 
 Rendered by `renderSummary()` `app.js:785-860`. Cards are grouped by the
-`group` field from `state.appConfig` (empty group → "Other"). Within each
-group, cards are sorted by `order` then name. The flat list is paginated
+`group` field from `state.appConfig`. **Tiles without a group are rendered first in the main area without a group header.** Groups are only shown when they contain at least one tile; empty groups are hidden automatically. Within each group, cards are sorted by `order` then name (when sort is "name"); when another sort is selected (state, cpu, mem, created), the sort order is preserved and groups appear in the order their items first appear. The flat list is paginated
 via `containersPagination` (shared with Containers page).
 
 Two types of applications exist:

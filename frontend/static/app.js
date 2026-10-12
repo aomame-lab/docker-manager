@@ -195,6 +195,99 @@ function getEffectiveUrl(appName, container) {
   return null;
 }
 
+/* ---------------------------------------------------------------- localStorage persistence for UI preferences */
+const PREF_KEY = "dm.ui.prefs.v1";
+
+const DEFAULT_PREFS = {
+  dashboard: { search: "", filter: "all", sort: "name", pageSize: 10 },
+  containers: { search: "", filter: "all", sort: "name", pageSize: 10 },
+  images: { search: "", sort: "repo", pageSize: 10 },
+  volumes: { search: "", sort: "name", pageSize: 10 },
+  networks: { search: "", sort: "name", pageSize: 10 },
+};
+
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem(PREF_KEY);
+    if (!raw) return DEFAULT_PREFS;
+    const parsed = JSON.parse(raw);
+    // Merge with defaults to handle missing keys / new pages
+    const merged = { ...DEFAULT_PREFS };
+    for (const page of Object.keys(DEFAULT_PREFS)) {
+      if (parsed[page]) {
+        merged[page] = { ...DEFAULT_PREFS[page], ...parsed[page] };
+        // Validate known values
+        if (page === "dashboard" || page === "containers") {
+          const validFilters = ["all", "running", "exited", "stopped", "restarting", "paused"];
+          if (!validFilters.includes(merged[page].filter)) merged[page].filter = DEFAULT_PREFS[page].filter;
+          const validSorts = ["name", "state", "cpu", "mem", "created"];
+          if (!validSorts.includes(merged[page].sort)) merged[page].sort = DEFAULT_PREFS[page].sort;
+        } else if (page === "images") {
+          const validSorts = ["repo", "tag", "created", "size"];
+          if (!validSorts.includes(merged[page].sort)) merged[page].sort = DEFAULT_PREFS[page].sort;
+        } else if (page === "volumes" || page === "networks") {
+          const validSorts = ["name", "driver"];
+          if (!validSorts.includes(merged[page].sort)) merged[page].sort = DEFAULT_PREFS[page].sort;
+        }
+        // Validate pageSize
+        const validPageSizes = [10, 25, 50, -1];
+        if (!validPageSizes.includes(merged[page].pageSize)) merged[page].pageSize = DEFAULT_PREFS[page].pageSize;
+      }
+    }
+    return merged;
+  } catch {
+    return DEFAULT_PREFS;
+  }
+}
+
+function savePrefs(prefs) {
+  try {
+    localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
+  } catch {
+    // Ignore quota/access errors
+  }
+}
+
+function applyPrefsToState(prefs) {
+  // Dashboard / Containers share the same pagination instance (containersPagination)
+  // They use the same state keys (search, filter, sort, pageSize)
+  // We apply the Dashboard prefs since they are the "primary" for this shared state
+  const d = prefs.dashboard || DEFAULT_PREFS.dashboard;
+  state.search = d.search;
+  state.filter = d.filter;
+  state.sort = d.sort;
+  state.pageSize = d.pageSize;
+  containersPagination.pageSize = d.pageSize === 10 || d.pageSize === 25 || d.pageSize === 50 ? d.pageSize : -1;
+
+  // Images
+  const i = prefs.images || DEFAULT_PREFS.images;
+  state.imagesSearch = i.search;
+  state.imagesSort = i.sort;
+  state.imagesPageSize = i.pageSize;
+  imagesPagination.pageSize = i.pageSize === 10 || i.pageSize === 25 || i.pageSize === 50 ? i.pageSize : -1;
+
+  // Volumes
+  const v = prefs.volumes || DEFAULT_PREFS.volumes;
+  state.volumesSearch = v.search;
+  state.volumesSort = v.sort;
+  state.volumesPageSize = v.pageSize;
+  volumesPagination.pageSize = v.pageSize === 10 || v.pageSize === 25 || v.pageSize === 50 ? v.pageSize : -1;
+
+  // Networks
+  const n = prefs.networks || DEFAULT_PREFS.networks;
+  state.networksSearch = n.search;
+  state.networksSort = n.sort;
+  state.networksPageSize = n.pageSize;
+  networksPagination.pageSize = n.pageSize === 10 || n.pageSize === 25 || n.pageSize === 50 ? n.pageSize : -1;
+}
+
+function updatePref(page, key, value) {
+  const prefs = loadPrefs();
+  if (!prefs[page]) prefs[page] = { ...DEFAULT_PREFS[page] };
+  prefs[page][key] = value;
+  savePrefs(prefs);
+}
+
 /* ---------------------------------------------------------------- helpers */
 const fmtBytes = b => {
   if (!b && b !== 0) return "–";
@@ -301,7 +394,139 @@ const imagesPagination = new Pagination("images");
 const volumesPagination = new Pagination("volumes");
 const networksPagination = new Pagination("networks");
 
-/* ------------------------------------------------------------------- auth */
+/* CPU and Memory threshold constants */
+const CPU_THRESHOLDS = { green: 70, amber: 85 };
+const MEM_THRESHOLDS = { green: 75, amber: 90 };
+
+/* Get color class for CPU percentage */
+const cpuColorClass = pct => {
+  if (pct === undefined || pct === null) return "stat-muted";
+  if (pct >= CPU_THRESHOLDS.amber) return "stat-red";
+  if (pct >= CPU_THRESHOLDS.green) return "stat-amber";
+  return "stat-green";
+};
+
+/* Get color class for memory percentage */
+const memColorClass = (used, limit) => {
+  if (!limit || limit <= 0 || used === undefined || used === null) return "stat-muted";
+  const pct = (used / limit) * 100;
+  if (pct >= MEM_THRESHOLDS.amber) return "stat-red";
+  if (pct >= MEM_THRESHOLDS.green) return "stat-amber";
+  return "stat-green";
+};
+
+/* Format bytes compact for stats display */
+const fmtBytesCompact = b => {
+  if (!b && b !== 0) return "–";
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return (i === 0 ? b : b.toFixed(1)) + " " + u[i];
+};
+
+/* Format CPU percentage for display */
+const fmtCpuPct = pct => {
+  if (pct === undefined || pct === null) return "–";
+  return pct.toFixed(1) + "%";
+}
+
+/* Format memory usage as used only */
+const fmtMemUsage = used => {
+  if (!used && used !== 0) return "–";
+  return fmtBytesCompact(used);
+}
+
+/* Compute memory percentage */
+const memPercent = (used, limit) => {
+  if (!limit || limit <= 0) return 0;
+  return Math.min(100, Math.round((used / limit) * 100));
+}
+
+/* Render CPU stats for a tile - compact inline with icon and color */
+function renderCpuStats(stats) {
+  if (!stats || stats.cpu_percent === undefined || stats.cpu_percent === null) {
+    return `<span class="stat-inline stat-muted"><i class="bi bi-cpu"></i> –</span>`;
+  }
+  const pct = stats.cpu_percent;
+  const colorClass = cpuColorClass(pct);
+  return `<span class="stat-inline ${colorClass}"><i class="bi bi-cpu"></i> ${fmtCpuPct(pct)}</span>`;
+}
+
+/* Render memory stats for a tile - compact inline with icon and color */
+function renderMemStats(stats) {
+  if (!stats || stats.mem_usage === undefined || stats.mem_usage === null) {
+    return `<span class="stat-inline stat-muted"><i class="bi bi-memory"></i> –</span>`;
+  }
+  const used = stats.mem_usage || 0;
+  const limit = stats.mem_limit || 0;
+  const colorClass = memColorClass(used, stats.mem_limit);
+  return `<span class="stat-inline ${colorClass}"><i class="bi bi-memory"></i> ${fmtMemUsage(used)}</span>`;
+}
+
+/* Docker status to color mapping */
+const DOCKER_STATUS_COLORS = {
+  running: "status-green",
+  stopped: "status-red",
+  exited: "status-purple",
+  paused: "status-yellow",
+  restarting: "status-cyan",
+};
+
+/* Get status color class for Docker container state */
+function getDockerStatusColor(state) {
+  return DOCKER_STATUS_COLORS[state?.toLowerCase()] || "status-gray";
+}
+
+/* Get Docker status label for accessibility */
+function getDockerStatusLabel(state) {
+  const labels = {
+    running: "Running",
+    stopped: "Stopped",
+    exited: "Exited",
+    paused: "Paused",
+    restarting: "Restarting",
+  };
+  return labels[state?.toLowerCase()] || state || "Unknown";
+}
+
+/* Render Docker status as a colored dot with accessibility */
+function renderDockerStatusDot(state) {
+  const colorClass = getDockerStatusColor(state);
+  const label = getDockerStatusLabel(state);
+  return `<span class="status-dot ${colorClass}" title="${esc(label)}" aria-label="Status: ${esc(label)}"></span>`;
+}
+
+/* Render manual app status dot */
+function renderManualStatusDot(online, url) {
+  if (!url) {
+    return `<span class="status-dot status-gray" title="URL not configured" aria-label="Status: URL not configured"></span>`;
+  }
+  const isOnline = online === true;
+  const label = isOnline ? "Online" : "Offline";
+  return `<span class="status-dot ${isOnline ? 'status-green' : 'status-red'}" title="${esc(label)}" aria-label="Status: ${esc(label)}"></span>`;
+}
+
+/* Render CPU stats for a tile - compact inline with icon and color */
+function renderCpuStats(stats) {
+  if (!stats || stats.cpu_percent === undefined || stats.cpu_percent === null) {
+    return `<span class="stat-inline stat-muted"><i class="bi bi-cpu"></i> –</span>`;
+  }
+  const pct = stats.cpu_percent;
+  const colorClass = cpuColorClass(pct);
+  return `<span class="stat-inline ${colorClass}"><i class="bi bi-cpu"></i> ${fmtCpuPct(pct)}</span>`;
+}
+
+/* Render memory stats for a tile - compact inline with icon and color */
+function renderMemStats(stats) {
+  if (!stats || stats.mem_usage === undefined || stats.mem_usage === null) {
+    return `<span class="stat-inline stat-muted"><i class="bi bi-memory"></i> –</span>`;
+  }
+  const used = stats.mem_usage || 0;
+  const limit = stats.mem_limit || 0;
+  const colorClass = memColorClass(used, stats.mem_limit);
+  return `<span class="stat-inline ${colorClass}"><i class="bi bi-memory"></i> ${fmtMemUsage(used)}</span>`;
+}
+
+/* ---------------------------------------------------------------- helpers */
 /* The server-side AUTH_TOKEN is never transmitted to the browser: the backend
    only reports auth_enabled (boolean). The operator types the token once into
    the login modal; it is kept in localStorage and replayed as
@@ -439,6 +664,7 @@ $("#app-config-form").addEventListener("submit", async e => {
   const isNew = cfg.isDraft === true || (cfg.type !== "manual" && !cfg.containerName);
   const appType = $("#app-config-modal").dataset.appType || "docker";
   const isManual = appType === "manual";
+  const groupValue = $("#app-config-group").value.trim();
   const payload = {
     appId: id,
     type: appType,
@@ -446,7 +672,7 @@ $("#app-config-form").addEventListener("submit", async e => {
     url: $("#app-config-url").value.trim() || undefined,
     description: $("#app-config-description").value.trim() || undefined,
     icon: $("#app-config-icon").value.trim() || undefined,
-    group: $("#app-config-group").value.trim() || undefined,
+    group: groupValue === "" ? null : groupValue,
     order: parseInt($("#app-config-order").value || "0", 10) || 0,
   };
   // For Docker apps, include containerName; for manual apps, omit it
@@ -948,22 +1174,44 @@ function renderSummary() {
   // Build unified list of applications: Docker containers + manual apps (from appConfig without matching container)
   const filtered = getDashboardApplications();
 
-  // Group applications by their group property, then sort groups and items.
-  // Build a flat list in group order for pagination, then re-group for rendering.
-  const appsByGroup = new Map();
-  for (const x of filtered) {
-    const cfg = state.appConfig[x.name] || {};
-    const group = (cfg.group || "").trim();
-    const groupKey = group || "\uFFFFOther"; // "Other" sorts last
-    if (!appsByGroup.has(groupKey)) {
-      appsByGroup.set(groupKey, { label: group || "Other", items: [] });
-    }
-    appsByGroup.get(groupKey).items.push(x);
-  }
+  let flatForPagination;
+  let sortedPaginatedGroups;
+  let ungroupedItems = [];
 
-  // Sort items within each group by order, then name
-  for (const group of appsByGroup.values()) {
-    group.items.sort((a, b) => {
+  if (state.sort === "name") {
+    // Default behavior: group by configured group, sort within groups by order then name
+    const appsByGroup = new Map();
+    ungroupedItems = [];
+    for (const x of filtered) {
+      const cfg = state.appConfig[x.name] || {};
+      const group = (cfg.group || "").trim();
+      if (group) {
+        if (!appsByGroup.has(group)) {
+          appsByGroup.set(group, { label: group, items: [] });
+        }
+        appsByGroup.get(group).items.push(x);
+      } else {
+        ungroupedItems.push(x);
+      }
+    }
+
+    for (const group of appsByGroup.values()) {
+      group.items.sort((a, b) => {
+        const cfgA = state.appConfig[a.name] || {};
+        const cfgB = state.appConfig[b.name] || {};
+        const orderA = cfgA.order || 0;
+        const orderB = cfgB.order || 0;
+        if (orderA !== orderB) return orderA - orderB;
+        return a.name.localeCompare(b.name);
+      });
+    }
+
+    const sortedGroups = [...appsByGroup.entries()].sort(([keyA], [keyB]) =>
+      appsByGroup.get(keyA).label.localeCompare(appsByGroup.get(keyB).label)
+    );
+
+    // Sort ungrouped items by order then name
+    ungroupedItems.sort((a, b) => {
       const cfgA = state.appConfig[a.name] || {};
       const cfgB = state.appConfig[b.name] || {};
       const orderA = cfgA.order || 0;
@@ -971,46 +1219,119 @@ function renderSummary() {
       if (orderA !== orderB) return orderA - orderB;
       return a.name.localeCompare(b.name);
     });
-  }
 
-  // Sort groups: named groups alphabetically, then "Other" last
-  const sortedGroups = [...appsByGroup.entries()].sort(([keyA], [keyB]) => {
-    if (keyA === "\uFFFFOther") return 1;
-    if (keyB === "\uFFFFOther") return -1;
-    return appsByGroup.get(keyA).label.localeCompare(appsByGroup.get(keyB).label);
-  });
-
-  // Flatten in group order for pagination
-  const flatForPagination = [];
-  for (const [, group] of sortedGroups) {
-    flatForPagination.push(...group.items);
-  }
-
-  // Apply pagination to the flat list
-  containersPagination.adjustPage(containersPagination.getTotalPages(flatForPagination));
-  const paginated = containersPagination.getPaginatedList(flatForPagination);
-
-  // Re-group the paginated results for rendering
-  const paginatedByGroup = new Map();
-  for (const x of paginated) {
-    const cfg = state.appConfig[x.name] || {};
-    const group = (cfg.group || "").trim();
-    const groupKey = group || "\uFFFFOther";
-    if (!paginatedByGroup.has(groupKey)) {
-      paginatedByGroup.set(groupKey, { label: group || "Other", items: [] });
+    flatForPagination = [];
+    for (const [, group] of sortedGroups) {
+      flatForPagination.push(...group.items);
     }
-    paginatedByGroup.get(groupKey).items.push(x);
+    flatForPagination.push(...ungroupedItems);
+
+    containersPagination.adjustPage(containersPagination.getTotalPages(flatForPagination));
+    const paginated = containersPagination.getPaginatedList(flatForPagination);
+
+    const paginatedByGroup = new Map();
+    const paginatedUngrouped = [];
+    for (const x of paginated) {
+      const cfg = state.appConfig[x.name] || {};
+      const group = (cfg.group || "").trim();
+      if (group) {
+        if (!paginatedByGroup.has(group)) {
+          paginatedByGroup.set(group, { label: group, items: [] });
+        }
+        paginatedByGroup.get(group).items.push(x);
+      } else {
+        paginatedUngrouped.push(x);
+      }
+    }
+
+    sortedPaginatedGroups = [...paginatedByGroup.entries()].sort(([keyA], [keyB]) =>
+      paginatedByGroup.get(keyA).label.localeCompare(paginatedByGroup.get(keyB).label)
+    );
+    ungroupedItems = paginatedUngrouped;
+  } else {
+    // User selected a specific sort (state, cpu, mem, created): respect the sort order
+    // Use the flat sorted list from getDashboardApplications() directly for pagination
+    flatForPagination = filtered;
+    containersPagination.adjustPage(containersPagination.getTotalPages(flatForPagination));
+    const paginated = containersPagination.getPaginatedList(flatForPagination);
+
+    // Separate grouped and ungrouped items, preserving sort order
+    const paginatedByGroup = new Map();
+    ungroupedItems = [];
+    const groupOrder = new Map();
+    let orderIndex = 0;
+    for (const x of paginated) {
+      const cfg = state.appConfig[x.name] || {};
+      const group = (cfg.group || "").trim();
+      if (group) {
+        if (!paginatedByGroup.has(group)) {
+          paginatedByGroup.set(group, { label: group, items: [] });
+          groupOrder.set(group, orderIndex++);
+        }
+        paginatedByGroup.get(group).items.push(x);
+      } else {
+        ungroupedItems.push(x);
+      }
+    }
+    sortedPaginatedGroups = [...paginatedByGroup.entries()].sort(([keyA], [keyB]) => {
+      const orderA = groupOrder.get(keyA) ?? Infinity;
+      const orderB = groupOrder.get(keyB) ?? Infinity;
+      return orderA - orderB;
+    });
   }
 
-  // Sort paginated groups: named groups alphabetically, then "Other" last
-  const sortedPaginatedGroups = [...paginatedByGroup.entries()].sort(([keyA], [keyB]) => {
-    if (keyA === "\uFFFFOther") return 1;
-    if (keyB === "\uFFFFOther") return -1;
-    return paginatedByGroup.get(keyA).label.localeCompare(paginatedByGroup.get(keyB).label);
-  });
-
-  // Render grouped cards
+  // Render cards: ungrouped items first (no group header), then each group with header
   let cardsHtml = "";
+
+  // Render ungrouped items first
+  if (ungroupedItems.length > 0) {
+    cardsHtml += `
+      <div class="col-12 mb-3">
+        <div class="row g-3">
+          ${ungroupedItems.map(x => {
+            const cfg = state.appConfig[x.name] || {};
+            const isManual = cfg.type === "manual";
+            const container = isManual ? {} : (state.containers.find(c => c.name === x.name) || {});
+            const displayName = cfg.name || x.name;
+            const displayUrl = getEffectiveUrl(x.name, container);
+            const displayDesc = cfg.description || "";
+            const nameHtml = displayUrl
+              ? `<a href="${esc(displayUrl)}" target="_blank" rel="noopener" class="app-card-link text-decoration-none" data-app-url="${esc(displayUrl)}">${esc(displayName)}</a>`
+              : `<span class="app-card-name">${esc(displayName)}</span>`;
+            const iconHtml = renderAppIcon(cfg.icon, isManual ? null : x.name);
+            const descHtml = displayDesc ? `<div class="app-card-description text-muted small">${esc(displayDesc)}</div>` : "";
+            const statusHtml = isManual
+              ? renderManualStatusDot(container?.online ?? false, cfg.url)
+              : renderDockerStatusDot(container.state);
+            const statsHtml = isManual ? "" : (renderCpuStats(container.stats) + " " + renderMemStats(container.stats));
+            return `
+            <div class="col-12 col-sm-6 col-lg-4 col-xl-3">
+              <div class="app-card" data-id="${esc(x.id)}" data-name="${esc(x.name)}" role="button" tabindex="0" aria-label="View ${esc(displayName)} details">
+                <div class="app-card-header">
+                  <div class="app-card-title-row">
+                    ${iconHtml}${nameHtml}
+                  </div>
+                  <div class="app-card-actions">
+                    <button class="btn btn-sm btn-outline-secondary app-edit-btn" data-edit-name="${esc(x.name)}" title="Configure tile" aria-label="Configure ${esc(displayName)}">
+                      <i class="bi bi-pencil-square"></i>
+                    </button>
+                  </div>
+                </div>
+                <div class="app-card-status-row">
+                  ${statusHtml}
+                </div>
+                ${descHtml}
+                <div class="app-card-stats">
+                  ${statsHtml}
+                </div>
+              </div>
+            </div>`;
+          }).join("")}
+        </div>
+      </div>`;
+  }
+
+  // Render grouped items
   for (const [, group] of sortedPaginatedGroups) {
     if (group.items.length === 0) continue;
     cardsHtml += `
@@ -1029,14 +1350,12 @@ function renderSummary() {
             const nameHtml = displayUrl
               ? `<a href="${esc(displayUrl)}" target="_blank" rel="noopener" class="app-card-link text-decoration-none" data-app-url="${esc(displayUrl)}">${esc(displayName)}</a>`
               : `<span class="app-card-name">${esc(displayName)}</span>`;
-            // For manual apps, don't auto-match icons; use explicit icon or fallback
             const iconHtml = renderAppIcon(cfg.icon, isManual ? null : x.name);
             const descHtml = displayDesc ? `<div class="app-card-description text-muted small">${esc(displayDesc)}</div>` : "";
-            // For manual apps, show neutral status and no image
             const statusHtml = isManual
-              ? `<div class="app-card-status"><span class="badge badge-state st-unknown">Manual</span><span class="app-status-indicator st-unknown" aria-hidden="true"></span></div>`
-              : `<div class="app-card-status">${badge(x.state)}<span class="app-status-indicator st-${esc(x.state)}" aria-hidden="true"></span></div>`;
-            const imageHtml = isManual ? "" : `<div class="app-card-image text-muted small">${esc(x.image)}</div>`;
+              ? renderManualStatusDot(container?.online ?? false, cfg.url)
+              : renderDockerStatusDot(container.state);
+            const statsHtml = isManual ? "" : (renderCpuStats(container.stats) + " " + renderMemStats(container.stats));
             return `
             <div class="col-12 col-sm-6 col-lg-4 col-xl-3">
               <div class="app-card" data-id="${esc(x.id)}" data-name="${esc(x.name)}" role="button" tabindex="0" aria-label="View ${esc(displayName)} details">
@@ -1054,7 +1373,9 @@ function renderSummary() {
                   ${statusHtml}
                 </div>
                 ${descHtml}
-                ${imageHtml}
+                <div class="app-card-stats">
+                  ${statsHtml}
+                </div>
               </div>
             </div>`;
           }).join("")}
@@ -1983,13 +2304,14 @@ $("#sel-all").addEventListener("change", e => {
 });
 
 /* Containers page controls */
-$("#search").addEventListener("input", e => { state.search = e.target.value.toLowerCase(); containersPagination.resetPage(); renderContainers(); });
-$("#filter-state").addEventListener("change", e => { state.filter = e.target.value; containersPagination.resetPage(); renderContainers(); });
-$("#sort-by").addEventListener("change", e => { state.sort = e.target.value; containersPagination.resetPage(); renderContainers(); });
+$("#search").addEventListener("input", e => { state.search = e.target.value.toLowerCase(); containersPagination.resetPage(); updatePref("containers", "search", state.search); renderContainers(); });
+$("#filter-state").addEventListener("change", e => { state.filter = e.target.value; containersPagination.resetPage(); updatePref("containers", "filter", state.filter); renderContainers(); });
+$("#sort-by").addEventListener("change", e => { state.sort = e.target.value; containersPagination.resetPage(); updatePref("containers", "sort", state.sort); renderContainers(); });
 $("#page-size").addEventListener("change", e => {
   const val = e.target.value;
   containersPagination.pageSize = val === "all" ? -1 : +val;
   containersPagination.resetPage();
+  updatePref("containers", "pageSize", containersPagination.pageSize);
   renderContainers();
 });
 $("#btn-page-prev").addEventListener("click", () => {
@@ -2001,13 +2323,14 @@ $("#btn-page-next").addEventListener("click", () => {
 });
 
 /* Dashboard containers overview controls */
-$("#dashboard-search").addEventListener("input", e => { state.search = e.target.value.toLowerCase(); containersPagination.resetPage(); renderSummary(); });
-$("#dashboard-filter-state").addEventListener("change", e => { state.filter = e.target.value; containersPagination.resetPage(); renderSummary(); });
-$("#dashboard-sort-by").addEventListener("change", e => { state.sort = e.target.value; containersPagination.resetPage(); renderSummary(); });
+$("#dashboard-search").addEventListener("input", e => { state.search = e.target.value.toLowerCase(); containersPagination.resetPage(); updatePref("dashboard", "search", state.search); renderSummary(); });
+$("#dashboard-filter-state").addEventListener("change", e => { state.filter = e.target.value; containersPagination.resetPage(); updatePref("dashboard", "filter", state.filter); renderSummary(); });
+$("#dashboard-sort-by").addEventListener("change", e => { state.sort = e.target.value; containersPagination.resetPage(); updatePref("dashboard", "sort", state.sort); renderSummary(); });
 $("#dashboard-page-size").addEventListener("change", e => {
   const val = e.target.value;
   containersPagination.pageSize = val === "all" ? -1 : +val;
   containersPagination.resetPage();
+  updatePref("dashboard", "pageSize", containersPagination.pageSize);
   renderSummary();
 });
 $("#btn-dashboard-page-prev").addEventListener("click", () => {
@@ -2019,12 +2342,13 @@ $("#btn-dashboard-page-next").addEventListener("click", () => {
 });
 
 /* Images page controls */
-$("#images-search").addEventListener("input", e => { state.imagesSearch = e.target.value.toLowerCase(); imagesPagination.resetPage(); renderImages(); });
-$("#images-sort-by").addEventListener("change", e => { state.imagesSort = e.target.value; imagesPagination.resetPage(); renderImages(); });
+$("#images-search").addEventListener("input", e => { state.imagesSearch = e.target.value.toLowerCase(); imagesPagination.resetPage(); updatePref("images", "search", state.imagesSearch); renderImages(); });
+$("#images-sort-by").addEventListener("change", e => { state.imagesSort = e.target.value; imagesPagination.resetPage(); updatePref("images", "sort", state.imagesSort); renderImages(); });
 $("#images-page-size").addEventListener("change", e => {
   const val = e.target.value;
   imagesPagination.pageSize = val === "all" ? -1 : +val;
   imagesPagination.resetPage();
+  updatePref("images", "pageSize", imagesPagination.pageSize);
   renderImages();
 });
 $("#btn-images-page-prev").addEventListener("click", () => {
@@ -2036,12 +2360,13 @@ $("#btn-images-page-next").addEventListener("click", () => {
 });
 
 /* Volumes page controls */
-$("#volumes-search").addEventListener("input", e => { state.volumesSearch = e.target.value.toLowerCase(); volumesPagination.resetPage(); renderVolumes(); });
-$("#volumes-sort-by").addEventListener("change", e => { state.volumesSort = e.target.value; volumesPagination.resetPage(); renderVolumes(); });
+$("#volumes-search").addEventListener("input", e => { state.volumesSearch = e.target.value.toLowerCase(); volumesPagination.resetPage(); updatePref("volumes", "search", state.volumesSearch); renderVolumes(); });
+$("#volumes-sort-by").addEventListener("change", e => { state.volumesSort = e.target.value; volumesPagination.resetPage(); updatePref("volumes", "sort", state.volumesSort); renderVolumes(); });
 $("#volumes-page-size").addEventListener("change", e => {
   const val = e.target.value;
   volumesPagination.pageSize = val === "all" ? -1 : +val;
   volumesPagination.resetPage();
+  updatePref("volumes", "pageSize", volumesPagination.pageSize);
   renderVolumes();
 });
 $("#btn-volumes-page-prev").addEventListener("click", () => {
@@ -2053,12 +2378,13 @@ $("#btn-volumes-page-next").addEventListener("click", () => {
 });
 
 /* Networks page controls */
-$("#networks-search").addEventListener("input", e => { state.networksSearch = e.target.value.toLowerCase(); networksPagination.resetPage(); renderNetworks(); });
-$("#networks-sort-by").addEventListener("change", e => { state.networksSort = e.target.value; networksPagination.resetPage(); renderNetworks(); });
+$("#networks-search").addEventListener("input", e => { state.networksSearch = e.target.value.toLowerCase(); networksPagination.resetPage(); updatePref("networks", "search", state.networksSearch); renderNetworks(); });
+$("#networks-sort-by").addEventListener("change", e => { state.networksSort = e.target.value; networksPagination.resetPage(); updatePref("networks", "sort", state.networksSort); renderNetworks(); });
 $("#networks-page-size").addEventListener("change", e => {
   const val = e.target.value;
   networksPagination.pageSize = val === "all" ? -1 : +val;
   networksPagination.resetPage();
+  updatePref("networks", "pageSize", networksPagination.pageSize);
   renderNetworks();
 });
 $("#btn-networks-page-prev").addEventListener("click", () => {
@@ -2110,6 +2436,30 @@ setupIconSearch();
 setupGroupAutocomplete();
 // Add application button handler
 $("#btn-add-app").addEventListener("click", createManualApp);
+
+// Load and apply saved UI preferences
+const savedPrefs = loadPrefs();
+applyPrefsToState(savedPrefs);
+
+// Sync UI controls with loaded preferences
+$("#dashboard-search").value = savedPrefs.dashboard.search;
+$("#dashboard-filter-state").value = savedPrefs.dashboard.filter;
+$("#dashboard-sort-by").value = savedPrefs.dashboard.sort;
+$("#dashboard-page-size").value = savedPrefs.dashboard.pageSize === -1 ? "all" : String(savedPrefs.dashboard.pageSize);
+$("#search").value = savedPrefs.containers.search;
+$("#filter-state").value = savedPrefs.containers.filter;
+$("#sort-by").value = savedPrefs.containers.sort;
+$("#page-size").value = savedPrefs.containers.pageSize === -1 ? "all" : String(savedPrefs.containers.pageSize);
+$("#images-search").value = savedPrefs.images.search;
+$("#images-sort-by").value = savedPrefs.images.sort;
+$("#images-page-size").value = savedPrefs.images.pageSize === -1 ? "all" : String(savedPrefs.images.pageSize);
+$("#volumes-search").value = savedPrefs.volumes.search;
+$("#volumes-sort-by").value = savedPrefs.volumes.sort;
+$("#volumes-page-size").value = savedPrefs.volumes.pageSize === -1 ? "all" : String(savedPrefs.volumes.pageSize);
+$("#networks-search").value = savedPrefs.networks.search;
+$("#networks-sort-by").value = savedPrefs.networks.sort;
+$("#networks-page-size").value = savedPrefs.networks.pageSize === -1 ? "all" : String(savedPrefs.networks.pageSize);
+
 loadSystem().then(() => {
   $("#set-poll").value = Math.round(state.pollInterval / 1000);
   // Pre-load icon index in background for automatic matching (non-blocking)

@@ -63,7 +63,10 @@ Current version: **V.1.0.0**
   appear automatically; no registration needed (polling with live UI updates)
 - **Dashboard** — total/running/stopped/restarting counts, aggregate CPU &
   RAM usage, per-container resource overview, and **application cards** for
-  each discovered container with clickable names, status badges, and icons
+  each discovered container with clickable names, status badges, and icons.
+  Application cards support **groups** (shown only when non-empty), **ungrouped
+  tiles** appear in the main area, and **persistent UI preferences** (search,
+  filter, sort, page size) are saved per page in localStorage.
 - **Container actions** — start / stop / restart / pause / unpause / kill /
   remove (with confirmation modals)
 - **Container details** — config, environment (masked sensitive values +
@@ -92,6 +95,8 @@ Current version: **V.1.0.0**
 - **About page** — application info, backend configuration and Docker Engine
   status; the global footer shows the app version and live engine version/API/OS
 - **Search, filter (state) and sort** the container list dynamically
+- **Persistent UI preferences** — search, filter, sort and page size are saved per page (Dashboard, Containers, Images, Volumes, Networks) in localStorage and restored on reload
+- **Dashboard application groups** — organize tiles into groups; groups only appear when they contain tiles; tiles without a group appear in the main area (no "Other" group)
 - **Dark, minimal UI** — dark blue/black theme with cyan accents, fully
   responsive (table on desktop, cards on mobile)
 - **REST API** with interactive OpenAPI docs at `/docs`
@@ -182,7 +187,7 @@ Each discovered container gets an application card on the Dashboard. Additionall
 - **URL** — if set, the card name becomes a link. For Docker-backed apps, if left empty, a URL is **automatically inferred** from the container's published TCP ports (e.g. `http://host:8080`). Saved URLs take priority over inferred ones. Inferred URLs are never persisted. Manual apps have no inferred URL.
 - **Description** — optional text shown on the card.
 - **Icon** — search and select from [selfh.st](https://selfh.st/icons/) icons. For Docker-backed apps, if no icon is selected, one is **automatically matched** from the container name (e.g. `grafana` → Grafana icon). Falls back to the default logo. Manual apps use the explicit icon or the default logo.
-- **Group** — optional logical group for organizing cards. Type to see suggestions from existing groups (case-insensitive, prefix matches first). Users may still enter a new group name.
+- **Group** — optional logical group for organizing cards. Type to see suggestions from existing groups (case-insensitive, prefix matches first). Users may still enter a new group name. **Groups only appear on the Dashboard when they contain at least one tile; empty groups are hidden automatically. Tiles without a group appear in the main area without a group header.**
 - **Order** — display order within the group (lower numbers first).
 
 Click the **Delete** button (red trash icon) in the configuration modal to remove a tile. A confirmation dialog shows the current display name. Deleting a tile removes its dashboard configuration from `BACKUP_DIR/dashboard-apps.json` but **never stops or removes the underlying Docker container or image**.

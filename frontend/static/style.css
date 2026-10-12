@@ -278,6 +278,66 @@ a.port-chip:hover { background: var(--dm-accent-dim); color: #fff; }
   color: var(--dm-accent);
 }
 
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: .25rem 0;
+  font-size: .75rem;
+}
+.stat-label {
+  color: #7c90a8;
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.stat-value {
+  font-weight: 600;
+  font-size: .8rem;
+  color: var(--dm-text);
+}
+
+/* Inline stats for dashboard tiles */
+.app-card-stats {
+  margin-top: .5rem;
+  padding-top: .5rem;
+  border-top: 1px solid var(--dm-border);
+}
+.stat-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  font-size: .75rem;
+  font-weight: 500;
+  padding: .1rem .4rem;
+  border-radius: .35rem;
+  white-space: nowrap;
+}
+.stat-inline i {
+  font-size: .8rem;
+}
+.stat-inline.stat-green { color: #34d399; background: rgba(52, 211, 153, 0.15); }
+.stat-inline.stat-amber { color: #fbbf24; background: rgba(251, 191, 36, 0.15); }
+.stat-inline.stat-red { color: #f87171; background: rgba(248, 113, 113, 0.15); }
+.stat-inline.stat-muted { color: #64748b; background: rgba(100, 116, 139, 0.15); }
+.stat-inline + .stat-inline { margin-left: .5rem; }
+
+/* Status dots for dashboard tiles */
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.status-dot.status-green { background: #34d399; box-shadow: 0 0 6px #34d399; }
+.status-dot.status-red { background: #f87171; box-shadow: 0 0 6px #f87171; }
+.status-dot.status-purple { background: #a78bfa; box-shadow: 0 0 6px #a78bfa; }
+.status-dot.status-yellow { background: #fbbf24; box-shadow: 0 0 6px #fbbf24; }
+.status-dot.status-cyan { background: #06b6d4; box-shadow: 0 0 6px #06b6d4; }
+.status-dot.status-gray { background: #64748b; }
+
 /* Group autocomplete suggestions */
 .group-suggestions {
   max-height: 200px;
