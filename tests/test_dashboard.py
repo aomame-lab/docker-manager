@@ -416,3 +416,93 @@ def test_update_omitted_field_preserves_value():
     assert updated["description"] == "Metrics & dashboards"
     assert updated["icon"] == "bi-graph-up"
     assert updated["group"] == "monitoring"
+
+
+def test_health_check_requires_manual_type():
+    """Test that health check endpoint rejects non-manual apps."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.deps import get_service
+    from unittest.mock import MagicMock
+
+    # Create a mock Docker service
+    mock_service = MagicMock()
+    mock_docker = MagicMock()
+    mock_service.client = mock_docker
+    app.dependency_overrides[get_service] = lambda: mock_service
+
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # Create a docker app
+    setup_module()
+    create_app({"appId": "docker-app", "type": "docker", "displayName": "Docker App"})
+
+    # Health check should fail for docker app
+    response = client.get("/api/dashboard/apps/docker-app/health")
+    assert response.status_code == 400
+    assert "Health check only available for manual applications" in response.text
+
+    app.dependency_overrides.clear()
+
+
+def test_health_check_returns_offline_for_missing_url():
+    """Test that health check returns offline for manual app without URL."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.deps import get_service
+    from unittest.mock import MagicMock
+
+    mock_service = MagicMock()
+    mock_docker = MagicMock()
+    mock_service.client = mock_docker
+    app.dependency_overrides[get_service] = lambda: mock_service
+
+    client = TestClient(app, raise_server_exceptions=False)
+
+    setup_module()
+    create_app({"appId": "manual-no-url", "type": "manual", "displayName": "Manual No URL"})
+
+    response = client.get("/api/dashboard/apps/manual-no-url/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["appId"] == "manual-no-url"
+    assert data["online"] is False
+    assert "checkedAt" in data
+
+    app.dependency_overrides.clear()
+
+
+def test_health_check_returns_offline_for_invalid_url():
+    """Test that health check returns offline for invalid URL scheme."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.deps import get_service
+    from unittest.mock import MagicMock
+
+    mock_service = MagicMock()
+    mock_docker = MagicMock()
+    mock_service.client = mock_docker
+    app.dependency_overrides[get_service] = lambda: mock_service
+
+    client = TestClient(app, raise_server_exceptions=False)
+
+    setup_module()
+    create_app({"appId": "manual-invalid", "type": "manual", "displayName": "Manual Invalid", "url": "ftp://invalid"})
+
+    response = client.get("/api/dashboard/apps/manual-invalid/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["appId"] == "manual-invalid"
+    assert data["online"] is False
+    assert "checkedAt" in data
+
+    app.dependency_overrides.clear()

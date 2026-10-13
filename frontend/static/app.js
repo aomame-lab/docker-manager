@@ -524,6 +524,9 @@ function renderManualStatusDot(online, url) {
   if (!url) {
     return `<span class="status-dot status-gray" title="URL not configured" aria-label="Status: URL not configured"></span>`;
   }
+  if (online === null) {
+    return `<span class="status-dot status-gray" title="Checking..." aria-label="Status: Checking..."></span>`;
+  }
   const isOnline = online === true;
   const label = isOnline ? "Online" : "Offline";
   return `<span class="status-dot ${isOnline ? 'status-green' : 'status-red'}" title="${esc(label)}" aria-label="Status: ${esc(label)}"></span>`;
@@ -874,11 +877,34 @@ async function loadAppConfig() {
         containerName: app.containerName,
         imageDigest: app.imageDigest,
         type: app.type || "docker",
+        online: null, // health status: null = unknown, true = online, false = offline
       };
     }
+    // Fetch health status for manual apps
+    await refreshManualAppsHealth();
   } catch (e) {
     // Fallback gracefully — the Dashboard will still work with generated cards
     console.warn("Failed to load dashboard app config:", e);
+  }
+}
+
+/* Refresh health status for all manual apps. */
+async function refreshManualAppsHealth() {
+  const manualAppIds = Object.keys(state.appConfig).filter(
+    id => state.appConfig[id].type === "manual" && state.appConfig[id].url
+  );
+  for (const appId of manualAppIds) {
+    try {
+      const health = await api(`/api/dashboard/apps/${encodeURIComponent(appId)}/health`);
+      if (state.appConfig[appId]) {
+        state.appConfig[appId].online = health.online;
+      }
+    } catch (e) {
+      console.warn(`Failed to check health for manual app ${appId}:`, e);
+      if (state.appConfig[appId]) {
+        state.appConfig[appId].online = false;
+      }
+    }
   }
 }
 
@@ -1328,9 +1354,9 @@ function renderSummary() {
             const iconHtml = renderAppIcon(cfg.icon, isManual ? null : x.name);
             const descHtml = displayDesc ? `<div class="app-card-description text-muted small">${esc(displayDesc)}</div>` : "";
             const statusHtml = isManual
-              ? renderManualStatusDot(container?.online ?? false, cfg.url)
+              ? renderManualStatusDot(cfg.online ?? null, cfg.url)
               : renderDockerStatusDot(container.state);
-            const statsHtml = isManual ? "" : (renderCpuStats(container.stats) + " " + renderMemStats(container.stats));
+            const statsHtml = isManual ? (renderCpuStats({}) + " " + renderMemStats({})) : (renderCpuStats(container.stats) + " " + renderMemStats(container.stats));
             const urlHtml = displayUrl ? `<div class="app-card-url text-truncate"><span class="text-muted small">${esc(new URL(displayUrl).host)}</span></div>` : `<div class="app-card-url-placeholder"></div>`;
             const cardTabIndex = hasContainer ? '0' : '-1';
             const cardRole = hasContainer ? 'button' : '';
@@ -1384,9 +1410,9 @@ function renderSummary() {
             const iconHtml = renderAppIcon(cfg.icon, isManual ? null : x.name);
             const descHtml = displayDesc ? `<div class="app-card-description text-muted small">${esc(displayDesc)}</div>` : "";
             const statusHtml = isManual
-              ? renderManualStatusDot(container?.online ?? false, cfg.url)
+              ? renderManualStatusDot(cfg.online ?? null, cfg.url)
               : renderDockerStatusDot(container.state);
-            const statsHtml = isManual ? "" : (renderCpuStats(container.stats) + " " + renderMemStats(container.stats));
+            const statsHtml = isManual ? (renderCpuStats({}) + " " + renderMemStats({})) : (renderCpuStats(container.stats) + " " + renderMemStats(container.stats));
             const urlHtml = displayUrl ? `<div class="app-card-url text-truncate"><span class="text-muted small">${esc(new URL(displayUrl).host)}</span></div>` : `<div class="app-card-url-placeholder"></div>`;
             const cardTabIndex = hasContainer ? '0' : '-1';
             const cardRole = hasContainer ? 'button' : '';
@@ -2509,6 +2535,17 @@ function restartPolling() {
   }, state.pollInterval);
 }
 
+/* --------------------------------------------------------------- manual apps health polling */
+let manualAppsHealthTimer = null;
+function restartManualAppsHealthPolling() {
+  clearInterval(manualAppsHealthTimer);
+  // Check every 60 seconds by default (can be adjusted)
+  const healthCheckInterval = 60000;
+  manualAppsHealthTimer = setInterval(() => {
+    if (state.page === "dashboard") refreshManualAppsHealth();
+  }, healthCheckInterval);
+}
+
 /* Create a new manual application draft and open the config modal */
 function createManualApp() {
   const newId = generateManualAppId();
@@ -2563,3 +2600,4 @@ loadSystem().then(() => {
 });
 refreshPage();
 restartPolling();
+restartManualAppsHealthPolling();
