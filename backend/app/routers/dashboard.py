@@ -161,9 +161,13 @@ async def check_manual_app_health(app_id: str):
             )
 
         # Perform HTTP reachability check
+        # For HTTPS with self-signed certificates (e.g., Proxmox), disable TLS verification
+        # only for this health check. Other HTTP requests in the application continue
+        # to verify TLS normally.
         online = False
+        verify_tls = not url_str.startswith("https://")
         try:
-            async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=True, verify=verify_tls) as client:
                 # Use HEAD request for lightweight check, fallback to GET if HEAD not allowed
                 try:
                     response = await client.head(url_str)
