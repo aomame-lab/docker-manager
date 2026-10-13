@@ -246,3 +246,173 @@ def test_update_rejects_empty_display_name():
         update_app("a", {"displayName": ""})
     with pytest.raises(ValueError, match="empty or whitespace"):
         update_app("a", {"displayName": "   "})
+
+
+def test_update_clears_optional_fields():
+    """Test that sending null for optional fields clears them."""
+    setup_module()
+    create_app({
+        "appId": "grafana",
+        "displayName": "Grafana",
+        "url": "https://grafana.example.com",
+        "description": "Metrics & dashboards",
+        "icon": "bi-graph-up",
+        "group": "monitoring",
+    })
+
+    # Clear all optional fields by sending null
+    updated = update_app("grafana", {
+        "url": None,
+        "description": None,
+        "icon": None,
+        "group": None,
+    })
+
+    assert updated["url"] is None
+    assert updated["description"] is None
+    assert updated["icon"] is None
+    assert updated["group"] is None
+    # displayName should be preserved
+    assert updated["displayName"] == "Grafana"
+
+
+def test_update_partial_clear_preserves_other_fields():
+    """Test clearing only some fields preserves others."""
+    setup_module()
+    create_app({
+        "appId": "grafana",
+        "displayName": "Grafana",
+        "url": "https://grafana.example.com",
+        "description": "Metrics & dashboards",
+        "icon": "bi-graph-up",
+        "group": "monitoring",
+        "order": 5,
+    })
+
+    # Clear only url and description
+    updated = update_app("grafana", {
+        "url": None,
+        "description": None,
+    })
+
+    assert updated["url"] is None
+    assert updated["description"] is None
+    # These should be preserved
+    assert updated["icon"] == "bi-graph-up"
+    assert updated["group"] == "monitoring"
+    assert updated["order"] == 5
+    assert updated["displayName"] == "Grafana"
+
+
+def test_update_with_empty_strings_clears_fields():
+    """Test that empty strings also clear fields (backend _validate_str behavior)."""
+    setup_module()
+    create_app({
+        "appId": "grafana",
+        "displayName": "Grafana",
+        "url": "https://grafana.example.com",
+        "description": "Metrics & dashboards",
+        "icon": "bi-graph-up",
+        "group": "monitoring",
+    })
+
+    # Send empty strings - _validate_str returns "" for empty string input
+    # But the API layer converts empty strings to None for HttpUrl fields
+    # For str fields, empty string is stored as empty string
+    # This test verifies the current behavior
+    updated = update_app("grafana", {
+        "description": "",
+        "icon": "",
+        "group": "",
+    })
+
+    # For str fields, empty string is stored as empty string (not None)
+    assert updated["description"] == ""
+    assert updated["icon"] == ""
+    assert updated["group"] == ""
+    # url not provided, should be preserved
+    assert updated["url"] == "https://grafana.example.com"
+
+
+def test_persistence_after_clear_and_reload():
+    """Test that cleared fields persist after store reload."""
+    setup_module()
+    create_app({
+        "appId": "grafana",
+        "displayName": "Grafana",
+        "url": "https://grafana.example.com",
+        "description": "Metrics & dashboards",
+        "icon": "bi-graph-up",
+        "group": "monitoring",
+    })
+
+    update_app("grafana", {
+        "url": None,
+        "description": None,
+        "icon": None,
+        "group": None,
+    })
+
+    # Simulate reload by reading from disk again
+    apps = list_apps()
+    assert len(apps) == 1
+    app = apps[0]
+    assert app["appId"] == "grafana"
+    assert app["displayName"] == "Grafana"
+    assert app["url"] is None
+    assert app["description"] is None
+    assert app["icon"] is None
+    assert app["group"] is None
+
+
+def test_manual_app_clear_fields():
+    """Test clearing fields works for manual apps too."""
+    setup_module()
+    create_app({
+        "appId": "manual-test",
+        "type": "manual",
+        "displayName": "Manual App",
+        "url": "https://manual.example.com",
+        "description": "A manual app",
+        "icon": "bi-box",
+        "group": "tools",
+    })
+
+    updated = update_app("manual-test", {
+        "url": None,
+        "description": None,
+        "icon": None,
+        "group": None,
+    })
+
+    assert updated["type"] == "manual"
+    assert updated["url"] is None
+    assert updated["description"] is None
+    assert updated["icon"] is None
+    assert updated["group"] is None
+    assert updated["displayName"] == "Manual App"
+
+
+def test_update_omitted_field_preserves_value():
+    """Test that omitting a field from update payload preserves its value (existing behavior)."""
+    setup_module()
+    create_app({
+        "appId": "grafana",
+        "displayName": "Grafana",
+        "url": "https://grafana.example.com",
+        "description": "Metrics & dashboards",
+        "icon": "bi-graph-up",
+        "group": "monitoring",
+    })
+
+    # Only update displayName, omit other fields
+    updated = update_app("grafana", {
+        "displayName": "Grafana Updated",
+    })
+
+    assert updated["displayName"] == "Grafana Updated"
+    # All other fields should be preserved
+    assert updated["url"] == "https://grafana.example.com"
+    assert updated["description"] == "Metrics & dashboards"
+    assert updated["icon"] == "bi-graph-up"
+    assert updated["group"] == "monitoring"

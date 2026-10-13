@@ -163,11 +163,12 @@
           <option value="all">All</option>
         </select>
         <button class="btn btn-accent" id="btn-pull"><i class="bi bi-cloud-download"></i> Pull</button>
+        <button class="btn btn-outline-danger" id="btn-images-delete-selected" disabled><i class="bi bi-trash"></i> <span id="images-sel-count">0</span> Delete</button>
       </div>
     </div>
     <div class="card dm-card"><div class="table-responsive">
       <table class="table table-hover align-middle mb-0">
-        <thead><tr><th>Repository</th><th>Tag</th><th>Image ID</th><th>Created</th><th>Size</th><th>In use</th><th class="text-end">Actions</th></tr></thead>
+        <thead><tr><th style="width:36px"><input class="form-check-input" type="checkbox" id="images-sel-all" aria-label="Select all images"></th><th>Repository</th><th>Tag</th><th>Image ID</th><th>Created</th><th>Size</th><th>In use</th><th class="text-end">Actions</th></tr></thead>
         <tbody id="images-tbody"></tbody>
       </table>
     </div></div>
@@ -288,17 +289,13 @@
       <div class="card-body">
         <dl class="row mb-0" id="settings-list"></dl>
         <hr>
-        <div class="mb-2">
-          <label class="form-label">Polling interval (seconds)</label>
-          <input type="number" class="form-control" id="set-poll" min="2" max="60" style="max-width:120px">
-        </div>
         <div class="mb-2 d-none" id="logout-wrap">
           <button class="btn btn-sm btn-outline-danger" id="btn-logout">
             <i class="bi bi-box-arrow-right"></i> Sign out
           </button>
           <span class="text-muted small ms-2">Access token is stored in this browser only.</span>
         </div>
-        <p class="text-muted small mb-0">Options like application name, backup directory or authentication
+        <p class="text-muted small mb-0">Options like backup directory or authentication
         are configured via environment variables (see <code>.env.example</code>) and require a restart.</p>
       </div>
     </div>
@@ -447,6 +444,7 @@
   <div class="container-fluid d-flex flex-wrap align-items-center gap-2 py-2">
     <span class="footer-brand d-flex align-items-center gap-2 me-auto">
       <img src="/static/aomame-lab-1.png" alt="Aomame Lab" class="footer-logo">
+      <a href="https://github.com/aomame-lab" target="_blank" rel="noopener noreferrer" class="footer-github text-muted small text-decoration-none">GitHub</a>
     </span>
     <span class="footer-version" id="app-version">V.—</span>
     <span class="footer-engine ms-auto text-muted small" id="engine-footer">

@@ -7,6 +7,7 @@ const state = {
   pageSize: 10, currentPage: 1,
   images: [], imagesSearch: "", imagesSort: "repo",
   imagesPageSize: 10, imagesCurrentPage: 1,
+  imagesSelected: new Set(),
   volumes: [], volumesSearch: "", volumesSort: "name",
   volumesPageSize: 10, volumesCurrentPage: 1,
   networks: [], networksSearch: "", networksSort: "name",
@@ -243,8 +244,9 @@ function loadPrefs() {
 function savePrefs(prefs) {
   try {
     localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
+    return true;
   } catch {
-    // Ignore quota/access errors
+    return false;
   }
 }
 
@@ -465,7 +467,7 @@ const memPercent = (used, limit) => {
 /* Render CPU stats for a tile - compact inline with icon and color */
 function renderCpuStats(stats) {
   if (!stats || stats.cpu_percent === undefined || stats.cpu_percent === null) {
-    return `<span class="stat-inline stat-muted"><i class="bi bi-cpu"></i> –</span>`;
+    return `<span class="stat-icon-only stat-muted"><i class="bi bi-cpu"></i></span>`;
   }
   const pct = stats.cpu_percent;
   const colorClass = statCpuColorClass(pct);
@@ -474,13 +476,14 @@ function renderCpuStats(stats) {
 
 /* Render memory stats for a tile - compact inline with icon and color */
 function renderMemStats(stats) {
-  if (!stats || stats.mem_usage === undefined || stats.mem_usage === null) {
-    return `<span class="stat-inline stat-muted"><i class="bi bi-memory"></i> –</span>`;
+  if (!stats || stats.mem_usage === undefined || stats.mem_usage === null || !stats.mem_limit || stats.mem_limit <= 0) {
+    return `<span class="stat-icon-only stat-text-muted"><i class="bi bi-memory"></i></span>`;
   }
   const used = stats.mem_usage || 0;
   const limit = stats.mem_limit || 0;
-  const colorClass = statMemColorClass(used, stats.mem_limit);
-  return `<span class="stat-inline ${colorClass}"><i class="bi bi-memory"></i> ${fmtMemUsage(used)}</span>`;
+  const pct = memPercent(used, limit);
+  const colorClass = statMemColorClass(used, limit).replace("stat-", "stat-text-");
+  return `<span class="stat-inline ${colorClass}"><i class="bi bi-memory"></i> ${fmtCpuPct(pct)}</span>`;
 }
 
 /* Docker status to color mapping */
@@ -524,27 +527,6 @@ function renderManualStatusDot(online, url) {
   const isOnline = online === true;
   const label = isOnline ? "Online" : "Offline";
   return `<span class="status-dot ${isOnline ? 'status-green' : 'status-red'}" title="${esc(label)}" aria-label="Status: ${esc(label)}"></span>`;
-}
-
-/* Render CPU stats for a tile - compact inline with icon and color */
-function renderCpuStats(stats) {
-  if (!stats || stats.cpu_percent === undefined || stats.cpu_percent === null) {
-    return `<span class="stat-inline stat-muted"><i class="bi bi-cpu"></i> –</span>`;
-  }
-  const pct = stats.cpu_percent;
-  const colorClass = cpuColorClass(pct);
-  return `<span class="stat-inline ${colorClass}"><i class="bi bi-cpu"></i> ${fmtCpuPct(pct)}</span>`;
-}
-
-/* Render memory stats for a tile - compact inline with icon and color */
-function renderMemStats(stats) {
-  if (!stats || stats.mem_usage === undefined || stats.mem_usage === null) {
-    return `<span class="stat-inline stat-muted"><i class="bi bi-memory"></i> –</span>`;
-  }
-  const used = stats.mem_usage || 0;
-  const limit = stats.mem_limit || 0;
-  const colorClass = memColorClass(used, stats.mem_limit);
-  return `<span class="stat-inline ${colorClass}"><i class="bi bi-memory"></i> ${fmtMemUsage(used)}</span>`;
 }
 
 /* ---------------------------------------------------------------- helpers */
@@ -690,9 +672,9 @@ $("#app-config-form").addEventListener("submit", async e => {
     appId: id,
     type: appType,
     displayName: $("#app-config-name").value.trim(),
-    url: $("#app-config-url").value.trim() || undefined,
-    description: $("#app-config-description").value.trim() || undefined,
-    icon: $("#app-config-icon").value.trim() || undefined,
+    url: $("#app-config-url").value.trim() || null,
+    description: $("#app-config-description").value.trim() || null,
+    icon: $("#app-config-icon").value.trim() || null,
     group: groupValue === "" ? null : groupValue,
     order: parseInt($("#app-config-order").value || "0", 10) || 0,
   };
@@ -824,7 +806,8 @@ $$("#main-tabs .nav-link").forEach(btn => btn.addEventListener("click", () => {
   state.page = btn.dataset.page;
   $$(".page").forEach(p => p.classList.add("d-none"));
   $(`#page-${state.page}`).classList.remove("d-none");
-  clearContainerSelection();   // selection never persists across page changes
+  clearContainerSelection();
+  clearImagesSelection();   // selection never persists across page changes
   refreshPage();
 }));
 
@@ -853,8 +836,9 @@ async function loadSystem() {
       st.innerHTML = `<i class="bi bi-circle-fill"></i> disconnected`;
       $("#engine-footer").innerHTML = `<i class="bi bi-motherboard"></i> Docker Engine unavailable`;
     }
+    state.hostMemory = d.engine.host_memory || 0;
+    state.pollInterval = (d.settings.poll_interval || 5) * 1000;
     $("#app-version").textContent = `V.${d.settings.app_version || "—"}`;
-    $("#set-poll").value = Math.round(state.pollInterval / 1000);
     // Only offer sign-out once a token is actually stored in this browser.
     if ($("#logout-wrap")) $("#logout-wrap").classList.toggle("d-none", !getToken());
     $("#settings-list").innerHTML = [
@@ -978,6 +962,14 @@ async function loadContainers() {
 
 /* Single point to reset the container selection: IDs, checkboxes,
    counter and the "Backup selected" button. */
+function clearImagesSelection() {
+  if (!state.imagesSelected.size) return;
+  state.imagesSelected.clear();
+  $$("#images-tbody .sel").forEach(cb => { cb.checked = false; });
+  const all = $("#images-sel-all"); if (all) all.checked = false;
+  updateImagesSelCount();
+}
+
 function clearContainerSelection() {
   if (!state.selected.size) return;
   state.selected.clear();
@@ -1163,10 +1155,11 @@ function renderSummary() {
   const cpu = running.reduce((s, x) => s + (x.stats?.cpu_percent || 0), 0);
   const mem = running.reduce((s, x) => s + (x.stats?.mem_usage || 0), 0);
   const memLimit = running.reduce((s, x) => s + (x.stats?.mem_limit || 0), 0);
+  const hostMem = state.hostMemory || 0;
 
   // Calculate percentages for CPU and Memory
   const cpuPct = Math.min(100, Math.max(0, Number(cpu) || 0));
-  const memPct = memLimit > 0 ? Math.min(100, Math.max(0, (mem / memLimit) * 100)) : 0;
+  const memPct = hostMem > 0 ? Math.min(100, Math.max(0, (mem / hostMem) * 100)) : (memLimit > 0 ? Math.min(100, Math.max(0, (mem / memLimit) * 100)) : 0);
 
   // All 6 tiles with unified data structure
   const allTiles = [
@@ -1175,7 +1168,7 @@ function renderSummary() {
     { type: "counter", label: "Stopped", value: cnt(x => ["exited", "created", "dead"].includes(x.state)), icon: "stop-circle", colorClass: "" },
     { type: "counter", label: "Restarting", value: cnt(x => x.state === "restarting"), icon: "arrow-repeat", colorClass: "" },
     { type: "progress", label: "CPU", value: cpuPct.toFixed(1) + "%", icon: "cpu-fill", pct: cpuPct, thresholds: CPU_THRESHOLDS, unit: "%" },
-    { type: "progress", label: "Memory", value: memLimit > 0 ? memPct.toFixed(1) + "%" : "N/D", icon: "memory", pct: memPct, thresholds: MEM_THRESHOLDS, unit: "", hasLimit: memLimit > 0, pctStr: memLimit > 0 ? memPct.toFixed(1) + "%" : "N/A" },
+    { type: "progress", label: "Memory", value: hostMem > 0 ? memPct.toFixed(1) + "%" : (memLimit > 0 ? memPct.toFixed(1) + "%" : "N/D"), icon: "memory", pct: memPct, thresholds: MEM_THRESHOLDS, unit: "", hasLimit: hostMem > 0 || memLimit > 0, pctStr: hostMem > 0 ? memPct.toFixed(1) + "%" : (memLimit > 0 ? memPct.toFixed(1) + "%" : "N/A") },
   ];
 
   $("#summary-cards").innerHTML = `
@@ -1325,37 +1318,41 @@ function renderSummary() {
             const cfg = state.appConfig[x.name] || {};
             const isManual = cfg.type === "manual";
             const container = isManual ? {} : (state.containers.find(c => c.name === x.name) || {});
+            const hasContainer = !isManual && !!container.id;
             const displayName = cfg.name || x.name;
             const displayUrl = getEffectiveUrl(x.name, container);
             const displayDesc = cfg.description || "";
             const nameHtml = displayUrl
-              ? `<a href="${esc(displayUrl)}" target="_blank" rel="noopener" class="app-card-link text-decoration-none" data-app-url="${esc(displayUrl)}">${esc(displayName)}</a>`
-              : `<span class="app-card-name">${esc(displayName)}</span>`;
+              ? `<a href="${esc(displayUrl)}" target="_blank" rel="noopener" class="app-card-link text-decoration-none" data-app-url="${esc(displayUrl)}"><span class="app-card-name-text">${esc(displayName)}</span></a>`
+              : `<span class="app-card-name"><span class="app-card-name-text">${esc(displayName)}</span></span>`;
             const iconHtml = renderAppIcon(cfg.icon, isManual ? null : x.name);
             const descHtml = displayDesc ? `<div class="app-card-description text-muted small">${esc(displayDesc)}</div>` : "";
             const statusHtml = isManual
               ? renderManualStatusDot(container?.online ?? false, cfg.url)
               : renderDockerStatusDot(container.state);
             const statsHtml = isManual ? "" : (renderCpuStats(container.stats) + " " + renderMemStats(container.stats));
+            const urlHtml = displayUrl ? `<div class="app-card-url text-truncate"><span class="text-muted small">${esc(new URL(displayUrl).host)}</span></div>` : `<div class="app-card-url-placeholder"></div>`;
+            const cardTabIndex = hasContainer ? '0' : '-1';
+            const cardRole = hasContainer ? 'button' : '';
+            const cardAriaLabel = hasContainer ? `aria-label="View ${esc(displayName)} details"` : '';
             return `
             <div class="col-12 col-sm-6 col-lg-4 col-xl-3">
-              <div class="app-card" data-id="${esc(x.id)}" data-name="${esc(x.name)}" role="button" tabindex="0" aria-label="View ${esc(displayName)} details">
+              <div class="app-card" data-id="${esc(x.id)}" data-name="${esc(x.name)}" data-has-container="${hasContainer}" ${cardRole} tabindex="${cardTabIndex}" ${cardAriaLabel}>
                 <div class="app-card-header">
                   <div class="app-card-title-row">
                     ${iconHtml}${nameHtml}
+                    ${statusHtml}
                   </div>
+                </div>
+                ${urlHtml}
+                ${descHtml}
+                <div class="app-card-stats d-flex align-items-center justify-content-between">
+                  <span>${statsHtml}</span>
                   <div class="app-card-actions">
                     <button class="btn btn-sm btn-outline-secondary app-edit-btn" data-edit-name="${esc(x.name)}" title="Configure tile" aria-label="Configure ${esc(displayName)}">
                       <i class="bi bi-pencil-square"></i>
                     </button>
                   </div>
-                </div>
-                <div class="app-card-status-row">
-                  ${statusHtml}
-                </div>
-                ${descHtml}
-                <div class="app-card-stats">
-                  ${statsHtml}
                 </div>
               </div>
             </div>`;
@@ -1377,37 +1374,41 @@ function renderSummary() {
             const cfg = state.appConfig[x.name] || {};
             const isManual = cfg.type === "manual";
             const container = isManual ? {} : (state.containers.find(c => c.name === x.name) || {});
+            const hasContainer = !isManual && !!container.id;
             const displayName = cfg.name || x.name;
             const displayUrl = getEffectiveUrl(x.name, container);
             const displayDesc = cfg.description || "";
             const nameHtml = displayUrl
-              ? `<a href="${esc(displayUrl)}" target="_blank" rel="noopener" class="app-card-link text-decoration-none" data-app-url="${esc(displayUrl)}">${esc(displayName)}</a>`
-              : `<span class="app-card-name">${esc(displayName)}</span>`;
+              ? `<a href="${esc(displayUrl)}" target="_blank" rel="noopener" class="app-card-link text-decoration-none" data-app-url="${esc(displayUrl)}"><span class="app-card-name-text">${esc(displayName)}</span></a>`
+              : `<span class="app-card-name"><span class="app-card-name-text">${esc(displayName)}</span></span>`;
             const iconHtml = renderAppIcon(cfg.icon, isManual ? null : x.name);
             const descHtml = displayDesc ? `<div class="app-card-description text-muted small">${esc(displayDesc)}</div>` : "";
             const statusHtml = isManual
               ? renderManualStatusDot(container?.online ?? false, cfg.url)
               : renderDockerStatusDot(container.state);
             const statsHtml = isManual ? "" : (renderCpuStats(container.stats) + " " + renderMemStats(container.stats));
+            const urlHtml = displayUrl ? `<div class="app-card-url text-truncate"><span class="text-muted small">${esc(new URL(displayUrl).host)}</span></div>` : `<div class="app-card-url-placeholder"></div>`;
+            const cardTabIndex = hasContainer ? '0' : '-1';
+            const cardRole = hasContainer ? 'button' : '';
+            const cardAriaLabel = hasContainer ? `aria-label="View ${esc(displayName)} details"` : '';
             return `
             <div class="col-12 col-sm-6 col-lg-4 col-xl-3">
-              <div class="app-card" data-id="${esc(x.id)}" data-name="${esc(x.name)}" role="button" tabindex="0" aria-label="View ${esc(displayName)} details">
+              <div class="app-card" data-id="${esc(x.id)}" data-name="${esc(x.name)}" data-has-container="${hasContainer}" ${cardRole} tabindex="${cardTabIndex}" ${cardAriaLabel}>
                 <div class="app-card-header">
                   <div class="app-card-title-row">
                     ${iconHtml}${nameHtml}
+                    ${statusHtml}
                   </div>
+                </div>
+                ${urlHtml}
+                ${descHtml}
+                <div class="app-card-stats d-flex align-items-center justify-content-between">
+                  <span>${statsHtml}</span>
                   <div class="app-card-actions">
                     <button class="btn btn-sm btn-outline-secondary app-edit-btn" data-edit-name="${esc(x.name)}" title="Configure tile" aria-label="Configure ${esc(displayName)}">
                       <i class="bi bi-pencil-square"></i>
                     </button>
                   </div>
-                </div>
-                <div class="app-card-status-row">
-                  ${statusHtml}
-                </div>
-                ${descHtml}
-                <div class="app-card-stats">
-                  ${statsHtml}
                 </div>
               </div>
             </div>`;
@@ -1423,16 +1424,24 @@ function renderSummary() {
 
   // Attach click/keyboard handlers to application cards
   $$("#dashboard-apps .app-card").forEach(card => {
-    card.addEventListener("click", (e) => {
-      if (e.target.closest(".app-edit-btn") || e.target.closest(".app-card-link")) return;
-      openDetails(card.dataset.id, card.dataset.id);
-    });
-    card.addEventListener("keydown", e => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
+    const hasContainer = card.dataset.hasContainer === "true";
+    if (hasContainer) {
+      card.addEventListener("click", (e) => {
+        if (e.target.closest(".app-edit-btn") || e.target.closest(".app-card-link")) return;
         openDetails(card.dataset.id, card.dataset.id);
-      }
-    });
+      });
+      card.addEventListener("keydown", e => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openDetails(card.dataset.id, card.dataset.id);
+        }
+      });
+    } else {
+      // Remove button role/tabindex for non-clickable cards (already set in HTML)
+      card.removeAttribute("role");
+      card.removeAttribute("tabindex");
+      card.removeAttribute("aria-label");
+    }
   });
 
   // Attach edit button handlers
@@ -1526,11 +1535,17 @@ async function loadImages() {
     state.images = await api("/api/images");
   } catch (e) {
     if ($("#images-tbody")) $("#images-tbody").innerHTML =
-      `<tr><td colspan="7" class="text-center text-danger py-4">${esc(e.message)}</td></tr>`;
+      `<tr><td colspan="8" class="text-center text-danger py-4">${esc(e.message)}</td></tr>`;
     return;
   }
   imagesPagination.resetPage();
   renderImages();
+}
+
+function updateImagesSelCount() {
+  const count = state.imagesSelected.size;
+  $("#images-sel-count").textContent = count;
+  $("#btn-images-delete-selected").disabled = count === 0;
 }
 
 function renderImages() {
@@ -1539,6 +1554,7 @@ function renderImages() {
   const list = imagesPagination.getPaginatedList(filtered);
 
   $("#images-tbody").innerHTML = list.map(i => `<tr>
+    <td><input class="form-check-input sel" type="checkbox" data-id="${esc(i.id)}" ${state.imagesSelected.has(i.id) ? "checked" : ""}></td>
     <td class="fw-semibold">${esc(i.repo)}${i.dangling ? ' <span class="warn-chip">dangling</span>' : ""}</td>
     <td>${esc(i.tag)}</td>
     <td><code class="small">${esc(i.short_id)}</code></td>
@@ -1549,8 +1565,9 @@ function renderImages() {
         data-rmimgid="${esc(i.id)}" data-ref="${esc(i.repo + ":" + i.tag)}"
         data-inuse="${esc(i.in_use)}" data-ntags="${esc(i.tag_count)}">
       <i class="bi bi-trash"></i></button></td></tr>`).join("") ||
-    `<tr><td colspan="7" class="text-center text-muted py-4">No images</td></tr>`;
+    `<tr><td colspan="8" class="text-center text-muted py-4">No images</td></tr>`;
 
+  // Single image delete buttons
   $$("[data-rmimgid]").forEach(b => b.addEventListener("click", () => {
     const warn = b.dataset.inuse === "true"
       ? `<div class="alert alert-warning py-2">A container depends on this image — force removal will be used.</div>`
@@ -1564,7 +1581,38 @@ function renderImages() {
       });
   }));
 
+  // Checkbox selection handlers
+  $$("#images-tbody .sel").forEach(cb => {
+    cb.addEventListener("change", (e) => {
+      const id = e.target.dataset.id;
+      e.target.checked ? state.imagesSelected.add(id) : state.imagesSelected.delete(id);
+      updateImagesSelCount();
+      updateImagesSelAllState();
+    });
+  });
+
+  // Select all checkbox
+  const selAll = $("#images-sel-all");
+  if (selAll) {
+    const allSelected = list.length > 0 && list.every(i => state.imagesSelected.has(i.id));
+    const someSelected = list.some(i => state.imagesSelected.has(i.id));
+    selAll.checked = allSelected;
+    selAll.indeterminate = someSelected && !allSelected;
+  }
+
+  updateImagesSelCount();
   renderImagesPagination();
+}
+
+function updateImagesSelAllState() {
+  const selAll = $("#images-sel-all");
+  if (!selAll) return;
+  const filtered = filteredImages();
+  const list = imagesPagination.getPaginatedList(filtered);
+  const allSelected = list.length > 0 && list.every(i => state.imagesSelected.has(i.id));
+  const someSelected = list.some(i => state.imagesSelected.has(i.id));
+  selAll.checked = allSelected;
+  selAll.indeterminate = someSelected && !allSelected;
 }
 
 function renderImagesPagination() {
@@ -2353,6 +2401,64 @@ $("#btn-images-page-next").addEventListener("click", () => {
   if (imagesPagination.currentPage < totalPages) { imagesPagination.currentPage++; renderImages(); }
 });
 
+/* Images multi-select */
+$("#images-sel-all").addEventListener("change", (e) => {
+  const filtered = filteredImages();
+  const list = imagesPagination.getPaginatedList(filtered);
+  if (e.target.checked) {
+    list.forEach(i => state.imagesSelected.add(i.id));
+  } else {
+    list.forEach(i => state.imagesSelected.delete(i.id));
+  }
+  renderImages();
+});
+
+$("#btn-images-delete-selected").addEventListener("click", async () => {
+  const btn = $("#btn-images-delete-selected");
+  if (btn.disabled || state.imagesSelected.size === 0) return;
+
+  const selectedIds = [...state.imagesSelected];
+  const selectedImages = state.images.filter(i => selectedIds.includes(i.id));
+  const names = selectedImages.map(i => `${i.repo}:${i.tag} (${i.short_id})`).join(", ");
+
+  const warn = selectedImages.some(i => i.in_use)
+    ? `<div class="alert alert-warning py-2">Some images are used by containers — force removal will be used for those.</div>`
+    : selectedImages.some(i => i.tag_count > 1)
+      ? `<div class="alert alert-warning py-2">Some images have multiple tags; removing them by ID removes <b>all</b> tags.</div>`
+      : "";
+
+  confirmModal("Delete selected images",
+    `${warn}Delete <b>${selectedImages.length}</b> image(s)?<br><span class="text-muted small">${esc(names)}</span>`,
+    "Delete", async () => {
+      btn.disabled = true;
+      const results = { success: [], failed: [] };
+      for (const imageId of selectedIds) {
+        const img = state.images.find(i => i.id === imageId);
+        const force = img && (img.in_use || img.tag_count > 1);
+        try {
+          await api(`/api/images/${encodeURIComponent(imageId)}?force=${force}`, { method: "DELETE" });
+          results.success.push(imageId);
+        } catch (e) {
+          results.failed.push({ id: imageId, error: e.message });
+        }
+      }
+
+      // Clear selection for successfully deleted images
+      results.success.forEach(id => state.imagesSelected.delete(id));
+
+      if (results.success.length > 0) {
+        toast(`Deleted ${results.success.length} image(s)`, true);
+      }
+      if (results.failed.length > 0) {
+        const errors = results.failed.map(f => `${f.id.slice(0, 12)}: ${f.error}`).join("; ");
+        toast(`Failed to delete ${results.failed.length} image(s): ${errors}`, false);
+      }
+
+      await loadImages();
+      btn.disabled = false;
+    }, true);
+});
+
 /* Volumes page controls */
 $("#volumes-search").addEventListener("input", e => { state.volumesSearch = e.target.value.toLowerCase(); volumesPagination.resetPage(); updatePref("volumes", "search", state.volumesSearch); renderVolumes(); });
 $("#volumes-sort-by").addEventListener("change", e => { state.volumesSort = e.target.value; volumesPagination.resetPage(); updatePref("volumes", "sort", state.volumesSort); renderVolumes(); });
@@ -2392,9 +2498,6 @@ $("#btn-networks-page-next").addEventListener("click", () => {
 $("#btn-refresh").addEventListener("click", () => {
   clearContainerSelection();   // explicit refresh resets stale selections
   refreshPage();
-});
-$("#set-poll").addEventListener("change", e => {
-  state.pollInterval = Math.max(2, +e.target.value || 5) * 1000; restartPolling();
 });
 
 /* --------------------------------------------------------------- polling */
@@ -2455,7 +2558,6 @@ $("#networks-sort-by").value = savedPrefs.networks.sort;
 $("#networks-page-size").value = savedPrefs.networks.pageSize === -1 ? "all" : String(savedPrefs.networks.pageSize);
 
 loadSystem().then(() => {
-  $("#set-poll").value = Math.round(state.pollInterval / 1000);
   // Pre-load icon index in background for automatic matching (non-blocking)
   loadIconIndex().catch(() => {});
 });

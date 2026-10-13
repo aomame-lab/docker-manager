@@ -46,8 +46,10 @@ class DockerService:
     def info(self) -> dict[str, Any]:
         try:
             v = self.client.version()
+            i = self.client.info()
             return {"connected": True, "version": v.get("Version", "?"),
-                    "api": v.get("ApiVersion", "?"), "os": v.get("Os", "?")}
+                    "api": v.get("ApiVersion", "?"), "os": v.get("Os", "?"),
+                    "host_memory": i.get("MemTotal", 0)}
         except DockerException as exc:
             return {"connected": False, "error": str(exc)}
 

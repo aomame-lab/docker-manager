@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_name: str = "Docker Manager"
-    app_version: str = "1.0.0"
+    app_version: str = "1.1.0"
     host: str = "0.0.0.0"
     port: int = 8080
     docker_socket: str = "unix:///var/run/docker.sock"

@@ -570,7 +570,7 @@ This section is a precise description of the Dashboard **as it exists today**.
 
 ### 7.1 Layout (DOM order in `#page-dashboard`)
 
-1. `<div class="row g-3" id="summary-cards">` — populated by `renderSummary()` (3-row metrics layout).
+1. `<div class="row g-3" id="summary-cards">` — populated by `renderSummary()` (single-row metrics layout).
 2. `<h6 class="mt-4 mb-2 text-muted">Applications</h6>` — static label.
 3. Toolbar `<div class="d-flex flex-wrap gap-2 mb-3 align-items-center">`:
    - `#dashboard-search` (`form-control-sm`, max-width 300px)
@@ -580,30 +580,26 @@ This section is a precise description of the Dashboard **as it exists today**.
 4. `<div class="row g-3" id="dashboard-apps">` — application card grid (grouped).
 5. `<nav id="dashboard-pagination">` — pagination info, prev/next, page indicator.
 
-### 7.2 Summary cards (3-row layout)
+### 7.2 Summary cards (single-row layout)
 
-`renderSummary()` `app.js:1245-1353`. Three rows of `.dm-card.stat-card` elements in `.row.g-2`:
+`renderSummary()` `app.js:1184-1201`. Single row of six `.dm-card.stat-card` elements in `.row.g-1.stats-row`:
 
-**Row 1 — Container counters** (4 cards, `col-lg-3` each):
-| Label | Value | Icon | Source |
+| # | Tile | Type | Content |
 |---|---|---|---|
-| Total | `state.containers.length` | `boxes` | all states |
-| Running | count `state === "running"` | `play-circle` | |
-| Stopped | count `["exited","created","dead"]` | `stop-circle` | |
-| Restarting | count `state === "restarting"` | `arrow-repeat` | |
+| 1 | Total | counter | `state.containers.length`, `boxes` icon |
+| 2 | Running | counter | running count, `play-circle` icon |
+| 3 | Stopped | counter | exited/created/dead count, `stop-circle` icon |
+| 4 | Restarting | counter | restarting count, `arrow-repeat` icon |
+| 5 | CPU | progress | icon `cpu-fill`, value = aggregate CPU % (sum of container `cpu_percent`), vertical bar on right |
+| 6 | Memory | progress | icon `memory`, value = memory usage % (`mem_usage` / `mem_limit` sum), vertical bar on right |
 
-**Row 2 — Container aggregate metrics** (6 cards, `col-lg-2` each):
-| Label | Value | Icon | Source |
-|---|---|---|---|
-| CPU | `sum(cpu_percent)` of running + `"%"`, 1 decimal | `cpu` | unnormalised sum, can exceed 100% |
-| Memory | gauge (used/limit %), `fmtBytes` | `memory` | gauge + detail |
-**Row 2 — Container aggregate metrics** (2 gauge cards, `col-lg-6` each):
-| Label | Value | Source |
-|---|---|---|
-| CPU | gauge (%) | sum of container `cpu_percent` |
-| Memory | gauge (used/limit %) | sum of container `mem_usage` / `mem_limit` |
+All six tiles are rectangular, equal-width, equal-height, compact. Content centered vertically and horizontally. CPU and Memory tiles show icon, label, percentage value, and a thin vertical progress bar on the right edge (4px wide, bottom-to-top fill).
 
-Row 2 shows only CPU and Memory gauges. The gauge arcs visually represent the aggregate container CPU percentage (unnormalized, can exceed 100%) and aggregate memory usage percentage (used/limit). No numerical values are displayed inside the gauges; the arcs and colors provide the visual indication.
+Color thresholds:
+- **CPU**: green <70%, amber ≥70% and <85%, red ≥85%
+- **Memory**: green <75%, amber ≥75% and <90%, red ≥90%
+
+Data source: `GET /api/containers` with `with_stats=true`. No host metrics are displayed; `/api/host` endpoint was removed.
 
 ### 7.3 Application cards (grouped, paginated)
 
@@ -1094,7 +1090,50 @@ container lifecycle management, and the log viewer covers the legitimate
 
 ---
 
-## 15. Planned Dashboard Redesign
+## 15. Next Activities
+
+### 15.1 Application Tiles Improvement (Priority 1)
+
+**Objective:** Improve the layout of application tiles in the Dashboard to be cleaner, more compact, and visually consistent with the statistics row.
+
+**Scope:**
+- Review current tile rendering (`renderSummary()` → application cards section in `app.js`).
+- Improve alignment of icons, names, status badges, and other information within tiles.
+- Enhance responsive layout behavior across breakpoints.
+- Review save/persistence mechanism for application configuration changes (modal → `PUT /api/dashboard/apps/{appId}` → `dashboard_store.py`).
+- Identify visual inconsistencies and spacing issues before proposing changes.
+
+**Investigation needed before implementation:**
+- Current tile rendering logic in `renderSummary()` (application cards section).
+- CSS for `.app-card`, `.app-card-header`, `.app-card-status-row`, `.app-card-stats`.
+- API endpoints: `GET/PUT/DELETE /api/dashboard/apps/{appId}` (`dashboard.py`, `dashboard_store.py`).
+- Persistence format in `BACKUP_DIR/dashboard-apps.json` (`dashboard_store.py`).
+
+**Constraints:** Maintain existing functionality (Docker-backed and manual apps, groups, filters, sort, pagination, manual apps). Visual style must remain consistent with the statistics row.
+
+### 15.2 Images Page — Multi-Select and Bulk Delete (Priority 2)
+
+**Objective:** Add multi-select capability to the Images page for bulk deletion of Docker images.
+
+**Scope:**
+- Add checkboxes to image rows (similar to Containers page).
+- "Delete selected" button with explicit confirmation modal.
+- Single API call or sequential calls to `DELETE /api/images/{id}?force=...` per selected image.
+- Handle partial failures gracefully: report which images were deleted and which failed (with reasons: in use, multiple tags, etc.).
+- Update UI after operation; clear selection; show toast summary.
+
+**Prerequisites / Investigation:**
+- Existing image deletion API: `DELETE /api/images/{id}?force=` (`resources.py`, `docker_service.py`).
+- Current UI: `#page-images`, `renderImages()`, checkbox pattern from Containers page (`#sel-all`, `.sel`).
+- Force delete logic for images with multiple tags or in use by containers.
+
+**Constraints:** No unintended deletions. Confirmation modal must clearly state consequences. Respect Docker constraints (images in use by containers require force delete).
+
+> **Note:** This functionality is NOT to be implemented now. It is documented here for future planning. Implementation will require a fresh, explicit instruction.
+
+---
+
+## 16. Planned Dashboard Redesign
 
 **This section is direction only. Nothing here is implemented. Do not start
 implementing from this section without a fresh, explicit instruction.**
